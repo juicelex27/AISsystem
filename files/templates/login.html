@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login — SchoolSync SIS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<div class="login-wrapper">
+  <div class="login-card">
+
+    <div class="login-brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zm0 2.27L20 9l-8 4.36L4 9l8-3.73zM5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82z"/>
+        </svg>
+      </div>
+      <h1>SchoolSync SIS</h1>
+      <p>School Information System — Admin Portal</p>
+    </div>
+
+    {% if error %}
+      <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST" action="{{ url_for('login') }}">
+      <div class="form-group">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" class="form-control"
+               placeholder="Enter your username" required autocomplete="username">
+      </div>
+
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" class="form-control"
+               placeholder="Enter your password" required autocomplete="current-password">
+      </div>
+
+      <button type="submit" class="btn-login">Sign In to Dashboard</button>
+    </form>
+
+    <p style="text-align:center;font-size:12px;color:#9ca3af;margin-top:24px;">
+      Default credentials: <strong>admin</strong> / <strong>admin123</strong>
+    </p>
+
+  </div>
+</div>
+
+</body>
+</html>
