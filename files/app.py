@@ -39,7 +39,10 @@ def init_db():
             grade_level TEXT NOT NULL,
             section_name TEXT NOT NULL,
             adviser_id INTEGER,
-            FOREIGN KEY (adviser_id) REFERENCES teachers(id) ON DELETE SET NULL
+            strand_id INTEGER,
+            student_limit INTEGER DEFAULT 40,
+            FOREIGN KEY (adviser_id) REFERENCES teachers(id) ON DELETE SET NULL,
+            FOREIGN KEY (strand_id) REFERENCES strands(id) ON DELETE SET NULL
         );
         CREATE TABLE IF NOT EXISTS subjects (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,6 +113,16 @@ def init_db():
             FOREIGN KEY (strand_id)  REFERENCES strands(id)  ON DELETE SET NULL
         );
     ''')
+    # Migration: add student_limit column to existing databases
+    try:
+        conn.execute("ALTER TABLE sections ADD COLUMN student_limit INTEGER DEFAULT 40")
+    except Exception:
+        pass  # column already exists
+    # Migration: add strand_id column to existing databases
+    try:
+        conn.execute("ALTER TABLE sections ADD COLUMN strand_id INTEGER REFERENCES strands(id) ON DELETE SET NULL")
+    except Exception:
+        pass  # column already exists
     cur.execute("SELECT COUNT(*) FROM admins")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO admins (username,password,full_name) VALUES (?,?,?)",
@@ -255,11 +268,9 @@ def teacher_schedule(tid):
             sc.time_start
     """, (tid,)).fetchall()
 
-    # Overall stats
     days_active    = len(set(s['day']        for s in schedules_list))
     sections_count = len(set(s['section_id'] for s in schedules_list))
 
-    # Per-semester stats for the profile card and JS
     semesters_present = sorted({s['semester'] for s in schedules_list if s['semester']})
     sem_stats = {}
     for sem in semesters_present:
@@ -430,7 +441,8 @@ def api_strand_subjects(stid):
         SELECT sub.id, sub.subject_name, sub.subject_code, sub.grade_level
         FROM subjects sub
         JOIN strand_subjects ss ON ss.subject_id=sub.id
-        WHERE ss.strand_id=? ORDER BY sub.subject_name
+        WHERE ss.strand_id=?
+        ORDER BY sub.subject_name
     """, (stid,)).fetchall()
     conn.close()
     return jsonify([dict(s) for s in subs])
@@ -440,26 +452,42 @@ def api_strand_subjects(stid):
 @login_required
 def sections():
     conn = get_db()
-    sections_raw  = conn.execute("""
-        SELECT s.*, t.first_name, t.last_name
-        FROM sections s LEFT JOIN teachers t ON s.adviser_id=t.id
+    sections_raw = conn.execute("""
+        SELECT s.*, t.first_name, t.last_name,
+               COALESCE(s.student_limit, 40) AS student_limit,
+               (SELECT COUNT(*) FROM students st WHERE st.section_id = s.id) AS student_count,
+               st.strand_code, st.strand_name
+        FROM sections s
+        LEFT JOIN teachers t ON s.adviser_id = t.id
+        LEFT JOIN strands st ON s.strand_id = st.id
         ORDER BY s.grade_level, s.section_name
     """).fetchall()
     teachers_list = conn.execute("SELECT id,first_name,last_name FROM teachers ORDER BY last_name").fetchall()
+    strands_list  = conn.execute("SELECT id,strand_code,strand_name FROM strands ORDER BY strand_code").fetchall()
     sections_data = []
     for sec in sections_raw:
         cnt = conn.execute("SELECT COUNT(*) FROM schedules WHERE section_id=?", (sec['id'],)).fetchone()[0]
-        sections_data.append({'section': sec, 'schedule_count': cnt})
+        sections_data.append({
+            'section':        sec,
+            'schedule_count': cnt,
+            'student_count':  sec['student_count'],
+            'student_limit':  sec['student_limit'],
+        })
     conn.close()
-    return render_template('sections.html', sections_data=sections_data, teachers=teachers_list)
+    return render_template('sections.html', sections_data=sections_data, teachers=teachers_list, strands=strands_list)
 
 @app.route('/sections/add', methods=['POST'])
 @login_required
 def add_section():
     d = request.form
     conn = get_db()
-    conn.execute("INSERT INTO sections (grade_level,section_name,adviser_id) VALUES (?,?,?)",
-                 (d['grade_level'], d['section_name'], d.get('adviser_id') or None))
+    conn.execute(
+        "INSERT INTO sections (grade_level,section_name,adviser_id,strand_id,student_limit) VALUES (?,?,?,?,?)",
+        (d['grade_level'], d['section_name'],
+         d.get('adviser_id') or None,
+         d.get('strand_id') or None,
+         int(d.get('student_limit') or 40))
+    )
     conn.commit(); conn.close()
     flash('Section added.', 'success')
     return redirect(url_for('sections'))
@@ -469,8 +497,14 @@ def add_section():
 def edit_section(sec_id):
     d = request.form
     conn = get_db()
-    conn.execute("UPDATE sections SET grade_level=?,section_name=?,adviser_id=? WHERE id=?",
-                 (d['grade_level'], d['section_name'], d.get('adviser_id') or None, sec_id))
+    conn.execute(
+        "UPDATE sections SET grade_level=?,section_name=?,adviser_id=?,strand_id=?,student_limit=? WHERE id=?",
+        (d['grade_level'], d['section_name'],
+         d.get('adviser_id') or None,
+         d.get('strand_id') or None,
+         int(d.get('student_limit') or 40),
+         sec_id)
+    )
     conn.commit(); conn.close()
     flash('Section updated.', 'success')
     return redirect(url_for('sections'))
@@ -512,15 +546,6 @@ MAX_SECTIONS_PER_TEACHER = 8   # configurable workload cap
 
 def find_conflicts(conn, section_id, teacher_id, day, time_start, time_end,
                    room='', exclude_id=None, subject_id=None):
-    """
-    Detect four categories of scheduling conflicts:
-      section   — the section already has a class in this time slot
-      teacher   — the teacher is busy in another section at this time
-      room      — the room is occupied (if a room is specified)
-      workload  — teacher already covers MAX_SECTIONS_PER_TEACHER distinct sections
-                  (scoped to the same semester as the subject being assigned)
-    Returns a deduplicated list of conflict dicts.
-    """
     base_q = """
         SELECT sc.id, sc.section_id, sc.teacher_id, sc.time_start, sc.time_end,
                sc.room, sub.subject_name, sub.subject_code,
@@ -545,7 +570,6 @@ def find_conflicts(conn, section_id, teacher_id, day, time_start, time_end,
         ts = fmt_time(r['time_start'])
         te = fmt_time(r['time_end'])
 
-        # 1. Section conflict — same section, overlapping slot
         if str(r['section_id']) == str(section_id):
             conflicts.append({
                 'type':   'section',
@@ -554,7 +578,6 @@ def find_conflicts(conn, section_id, teacher_id, day, time_start, time_end,
                            f'scheduled from {ts} to {te}.')
             })
 
-        # 2. Teacher conflict — same teacher, different (or same) section
         if str(r['teacher_id']) == str(teacher_id):
             conflicts.append({
                 'type':   'teacher',
@@ -564,7 +587,6 @@ def find_conflicts(conn, section_id, teacher_id, day, time_start, time_end,
                            f'– {r["section_name"]} from {ts} to {te}.')
             })
 
-        # 3. Room conflict — same non-empty room
         if room and room.strip() and r['room']:
             if r['room'].strip().lower() == room.strip().lower():
                 conflicts.append({
@@ -575,7 +597,6 @@ def find_conflicts(conn, section_id, teacher_id, day, time_start, time_end,
                                f'from {ts} to {te}.')
                 })
 
-    # 4. Workload cap — scoped to the same semester as the subject being assigned
     semester = None
     if subject_id:
         row = conn.execute(
@@ -596,7 +617,6 @@ def find_conflicts(conn, section_id, teacher_id, day, time_start, time_end,
         existing_sections = conn.execute(sec_q, args_w).fetchall()
         existing_sec_ids  = {str(r['section_id']) for r in existing_sections}
 
-        # Only flag if this is a NEW section for the teacher in this semester
         if str(section_id) not in existing_sec_ids and \
                 len(existing_sec_ids) >= MAX_SECTIONS_PER_TEACHER:
             teacher_row = conn.execute(
@@ -611,10 +631,7 @@ def find_conflicts(conn, section_id, teacher_id, day, time_start, time_end,
                            f'{len(existing_sec_ids)} section(s) in {semester} — '
                            f'the maximum is {MAX_SECTIONS_PER_TEACHER} per semester.')
             })
-    # If no subject_id provided we skip the cap check — it will be caught
-    # once the subject is selected and a full conflict check runs.
 
-    # Deduplicate
     seen, unique = set(), []
     for c in conflicts:
         key = c['type'] + c['detail']
@@ -627,7 +644,6 @@ def find_conflicts(conn, section_id, teacher_id, day, time_start, time_end,
 @app.route('/api/schedule/check_conflict', methods=['POST'])
 @login_required
 def api_check_conflict():
-    """AJAX endpoint — validates a proposed schedule entry without saving."""
     d          = request.get_json(force=True) or {}
     section_id = d.get('section_id')
     teacher_id = d.get('teacher_id')
@@ -639,11 +655,6 @@ def api_check_conflict():
     exclude_id = d.get('exclude_id')
 
     def get_workload(conn, tid, sid, sec_id):
-        """
-        Return workload scoped to the semester of `sid` (subject_id).
-        If no subject selected, return counts for both semesters so the
-        bar is never misleadingly unscoped.
-        """
         if sid:
             row = conn.execute("SELECT semester FROM subjects WHERE id=?", (sid,)).fetchone()
             semester = row['semester'] if row else None
@@ -672,8 +683,6 @@ def api_check_conflict():
                 'semester':  semester,
             }
         else:
-            # No subject selected — return counts for all known semesters
-            # so the bar shows the correct per-semester load, not a combined total.
             rows = conn.execute("""
                 SELECT sub.semester, COUNT(DISTINCT sc.section_id) AS cnt
                 FROM schedules sc
@@ -682,30 +691,26 @@ def api_check_conflict():
                 GROUP BY sub.semester
             """, (tid,)).fetchall()
             per_sem = {r['semester']: r['cnt'] for r in rows}
-            # Pick the busier semester to surface as the primary number
             busiest_sem = max(per_sem, key=per_sem.get) if per_sem else None
             busiest_cnt = per_sem[busiest_sem] if busiest_sem else 0
             return {
                 'current':   busiest_cnt,
-                'projected': busiest_cnt,   # no subject = no projection
+                'projected': busiest_cnt,
                 'max':       MAX_SECTIONS_PER_TEACHER,
-                'semester':  busiest_sem,   # labeled so user knows which semester
-                'per_sem':   per_sem,       # full breakdown
+                'semester':  busiest_sem,
+                'per_sem':   per_sem,
             }
 
-    # Must have all required fields before checking
     if not all([section_id, teacher_id, day, time_start, time_end]):
         workload = None
         if teacher_id:
             conn = get_db()
             workload = get_workload(conn, teacher_id, subject_id, section_id)
-            # In incomplete state always show current count, not projection
             workload['projected'] = workload['current']
             conn.close()
         return jsonify({'conflicts': [], 'ready': False,
                         'incomplete': True, 'workload': workload})
 
-    # Time sanity check
     if time_start >= time_end:
         return jsonify({
             'conflicts': [{
@@ -815,7 +820,6 @@ def delete_schedule(sch_id, sec_id):
     flash('Schedule entry removed.', 'success')
     return redirect(url_for('schedule', sec_id=sec_id))
 
-
 @app.route('/schedule/<int:sec_id>/flush', methods=['POST'])
 @login_required
 def flush_schedule(sec_id):
@@ -847,13 +851,8 @@ def students():
     """).fetchall()
     sections_list = conn.execute("SELECT * FROM sections ORDER BY grade_level, section_name").fetchall()
     strands_list  = conn.execute("SELECT * FROM strands ORDER BY strand_code").fetchall()
-    # Stats
     total      = len(students_list)
     enrolled   = sum(1 for s in students_list if s['enrollment_status'] == 'Enrolled')
-    by_section = {}
-    for s in students_list:
-        k = s['section_name'] or 'Unassigned'
-        by_section[k] = by_section.get(k, 0) + 1
     conn.close()
     return render_template('students.html',
                            students=students_list,
@@ -861,7 +860,6 @@ def students():
                            strands=strands_list,
                            total=total,
                            enrolled=enrolled)
-
 
 @app.route('/students/add', methods=['POST'])
 @login_required
@@ -895,7 +893,6 @@ def add_student():
     finally:
         conn.close()
     return redirect(url_for('students'))
-
 
 @app.route('/students/edit/<int:sid>', methods=['POST'])
 @login_required
@@ -932,7 +929,6 @@ def edit_student(sid):
         conn.close()
     return redirect(url_for('students'))
 
-
 @app.route('/students/delete/<int:sid>', methods=['POST'])
 @login_required
 def delete_student(sid):
@@ -942,20 +938,85 @@ def delete_student(sid):
     flash('Student deleted.', 'success')
     return redirect(url_for('students'))
 
+@app.route('/students/flush_by_strand', methods=['POST'])
+@login_required
+def flush_students_by_strand():
+    strand_id  = request.form.get('strand_id') or None
+    grade      = request.form.get('grade_level') or None
+    status     = request.form.get('enrollment_status') or None
 
+    if not strand_id and not grade and not status:
+        flash('Please select at least one filter before flushing.', 'warning')
+        return redirect(url_for('students'))
+
+    conn = get_db()
+    wheres, args = [], []
+    if strand_id:
+        wheres.append("strand_id = ?"); args.append(strand_id)
+    if grade:
+        wheres.append("grade_level = ?"); args.append(grade)
+    if status:
+        wheres.append("enrollment_status = ?"); args.append(status)
+
+    where_sql = " AND ".join(wheres)
+    count = conn.execute(f"SELECT COUNT(*) FROM students WHERE {where_sql}", args).fetchone()[0]
+    conn.execute(f"DELETE FROM students WHERE {where_sql}", args)
+    conn.commit(); conn.close()
+
+    flash(f'{count} student(s) deleted successfully.', 'success')
+    return redirect(url_for('students'))
+
+@app.route('/students/section/<int:sec_id>')
+@login_required
+def section_student_list(sec_id):
+    conn = get_db()
+    section = conn.execute("""
+        SELECT s.*, t.first_name, t.last_name,
+               st.strand_code, st.strand_name,
+               COALESCE(s.student_limit, 40) AS student_limit
+        FROM sections s
+        LEFT JOIN teachers t  ON s.adviser_id = t.id
+        LEFT JOIN strands  st ON s.strand_id  = st.id
+        WHERE s.id = ?
+    """, (sec_id,)).fetchone()
+    if not section:
+        flash('Section not found.', 'danger')
+        return redirect(url_for('students'))
+
+    all_students = conn.execute("""
+        SELECT s.*, st.strand_code
+        FROM students s
+        LEFT JOIN strands st ON s.strand_id = st.id
+        WHERE s.section_id = ?
+        ORDER BY s.last_name, s.first_name
+    """, (sec_id,)).fetchall()
+    conn.close()
+
+    males   = [s for s in all_students if (s['gender'] or '').upper() == 'MALE']
+    females = [s for s in all_students if (s['gender'] or '').upper() == 'FEMALE']
+    others  = [s for s in all_students if (s['gender'] or '').upper() not in ('MALE', 'FEMALE')]
+
+    return render_template('section_students.html',
+                           section=section,
+                           males=males, females=females, others=others,
+                           total=len(all_students))
 @app.route('/students/get/<int:sid>')
 @login_required
 def get_student(sid):
     conn = get_db()
-    s = conn.execute("SELECT * FROM students WHERE id=?", (sid,)).fetchone()
+    s = conn.execute("""
+        SELECT s.*, sec.section_name, st.strand_code, st.strand_name
+        FROM students s
+        LEFT JOIN sections sec ON s.section_id = sec.id
+        LEFT JOIN strands  st  ON s.strand_id  = st.id
+        WHERE s.id = ?
+    """, (sid,)).fetchone()
     conn.close()
     return jsonify(dict(s)) if s else (jsonify({}), 404)
-
 
 @app.route('/students/bulk_add', methods=['POST'])
 @login_required
 def bulk_add_students():
-    """Accept CSV text or JSON array of student rows."""
     import csv, io
     raw = request.form.get('csv_data', '').strip()
     if not raw:
@@ -967,7 +1028,12 @@ def bulk_add_students():
     added = skipped = 0
     errors = []
 
-    for i, row in enumerate(reader, start=2):  # row 1 = header
+    # Build a strand_code -> id lookup so CSV can use text like STEM instead of an ID
+    strand_lookup = {}
+    for r in conn.execute("SELECT id, strand_code FROM strands").fetchall():
+        strand_lookup[r['strand_code'].upper()] = r['id']
+
+    for i, row in enumerate(reader, start=2):
         sid_val = (row.get('student_id') or '').strip()
         fname   = (row.get('first_name') or '').strip()
         lname   = (row.get('last_name')  or '').strip()
@@ -975,13 +1041,25 @@ def bulk_add_students():
             errors.append(f'Row {i}: student_id, first_name, last_name are required.')
             skipped += 1
             continue
+
+        # Resolve strand — accept numeric ID or text code (e.g. STEM)
+        strand_id_val = None
+        raw_strand = (row.get('strand_id') or row.get('strand_code') or '').strip()
+        if raw_strand:
+            if raw_strand.isdigit():
+                strand_id_val = int(raw_strand)
+            else:
+                strand_id_val = strand_lookup.get(raw_strand.upper())
+                if strand_id_val is None:
+                    errors.append(f'Row {i}: strand "{raw_strand}" not found — skipping strand.')
+
         try:
             conn.execute("""
                 INSERT OR IGNORE INTO students
                   (student_id, first_name, last_name, middle_name, gender, birthdate,
                    address, contact_no, email, guardian_name, guardian_contact,
-                   grade_level, enrollment_status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   grade_level, enrollment_status, strand_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 sid_val, fname, lname,
                 row.get('middle_name','').strip() or None,
@@ -994,6 +1072,7 @@ def bulk_add_students():
                 row.get('guardian_contact','').strip() or None,
                 row.get('grade_level','').strip() or None,
                 row.get('enrollment_status','Enrolled').strip() or 'Enrolled',
+                strand_id_val,
             ))
             if conn.execute("SELECT changes()").fetchone()[0]:
                 added += 1
@@ -1014,6 +1093,185 @@ def bulk_add_students():
         for err in errors[:5]:
             flash(err, 'warning')
     return redirect(url_for('students'))
+
+
+# ── AUTO-ASSIGN SECTION API ──────────────────────────────────
+
+@app.route('/api/sections/by_strand')
+@login_required
+def api_sections_by_strand():
+    """Return sections with student count and available slots, filtered by strand/grade."""
+    strand_id = request.args.get('strand_id')
+    grade     = request.args.get('grade_level')
+
+    conn = get_db()
+    base = """
+        SELECT s.id, s.grade_level, s.section_name,
+               COALESCE(s.student_limit, 40) AS student_limit,
+               (SELECT COUNT(*) FROM students st WHERE st.section_id = s.id) AS student_count,
+               t.first_name, t.last_name,
+               st.strand_code, st.strand_name
+        FROM sections s
+        LEFT JOIN teachers t ON s.adviser_id = t.id
+        LEFT JOIN strands st ON s.strand_id = st.id
+    """
+    wheres, args = [], []
+
+    if grade:
+        wheres.append("s.grade_level = ?")
+        args.append(grade)
+
+    if strand_id:
+        wheres.append("s.strand_id = ?")
+        args.append(strand_id)
+
+    if wheres:
+        base += " WHERE " + " AND ".join(wheres)
+    base += " ORDER BY s.grade_level, s.section_name"
+
+    rows = conn.execute(base, args).fetchall()
+    conn.close()
+
+    result = []
+    for r in rows:
+        limit    = r['student_limit']
+        enrolled = r['student_count']
+        result.append({
+            'id':            r['id'],
+            'grade_level':   r['grade_level'],
+            'section_name':  r['section_name'],
+            'student_limit': limit,
+            'student_count': enrolled,
+            'available':     max(0, limit - enrolled),
+            'adviser':       f"{r['first_name']} {r['last_name']}" if r['first_name'] else None,
+            'strand_code':   r['strand_code'],
+            'strand_name':   r['strand_name'],
+        })
+    return jsonify(result)
+
+
+@app.route('/students/auto_assign', methods=['POST'])
+@login_required
+def auto_assign_students():
+    """Greedy round-robin auto-assign unassigned enrolled students into sections."""
+    data       = request.get_json(force=True) or {}
+    strand_id  = data.get('strand_id')
+    grade      = data.get('grade_level')
+    manual_ids = data.get('student_ids')
+
+    conn = get_db()
+
+    # Fetch candidate students
+    q_args = []
+    q = """
+        SELECT id, first_name, last_name, grade_level, strand_id
+        FROM students
+        WHERE section_id IS NULL AND enrollment_status = 'Enrolled'
+    """
+    if manual_ids:
+        placeholders = ','.join('?' * len(manual_ids))
+        q += f" AND id IN ({placeholders})"
+        q_args.extend(manual_ids)
+    if strand_id:
+        q += " AND strand_id = ?"
+        q_args.append(strand_id)
+    if grade:
+        q += " AND grade_level = ?"
+        q_args.append(grade)
+
+    students_to_assign = conn.execute(q, q_args).fetchall()
+
+    if not students_to_assign:
+        conn.close()
+        return jsonify({'assigned': 0, 'skipped': 0,
+                        'details': [], 'message': 'No eligible unassigned students found.'})
+
+    # Shuffle students so assignment is random, not alphabetical
+    import random
+    students_to_assign = list(students_to_assign)
+    random.shuffle(students_to_assign)
+
+    # Load target sections with available slots
+    sec_q_args = []
+    sec_q = """
+        SELECT s.id, s.grade_level, s.section_name,
+               COALESCE(s.student_limit, 40) AS student_limit,
+               (SELECT COUNT(*) FROM students st WHERE st.section_id = s.id) AS student_count
+        FROM sections s
+    """
+    sec_wheres = []
+    if grade:
+        sec_wheres.append("s.grade_level = ?")
+        sec_q_args.append(grade)
+    if strand_id:
+        sec_wheres.append("s.strand_id = ?")
+        sec_q_args.append(strand_id)
+    if sec_wheres:
+        sec_q += " WHERE " + " AND ".join(sec_wheres)
+    sec_q += " ORDER BY s.grade_level, s.section_name"
+
+    sections_raw = conn.execute(sec_q, sec_q_args).fetchall()
+
+    section_slots = []
+    for sec in sections_raw:
+        available = max(0, (sec['student_limit'] or 40) - sec['student_count'])
+        if available > 0:
+            section_slots.append({
+                'id':        sec['id'],
+                'name':      f"Grade {sec['grade_level']} – {sec['section_name']}",
+                'available': available,
+            })
+
+    if not section_slots:
+        conn.close()
+        return jsonify({'assigned': 0, 'skipped': len(students_to_assign),
+                        'details': [],
+                        'message': 'No sections with available slots found.'})
+
+    # Shuffle sections so the starting point is random each run
+    random.shuffle(section_slots)
+
+    # Round-robin across sections so students are spread randomly and evenly
+    assigned_count = skipped_count = 0
+    details = []
+
+    for student in students_to_assign:
+        # Find next section with an available slot (round-robin)
+        placed = False
+        for _ in range(len(section_slots)):
+            sec = section_slots[0]
+            section_slots.append(section_slots.pop(0))  # rotate
+            if sec['available'] > 0:
+                conn.execute("UPDATE students SET section_id = ? WHERE id = ?", (sec['id'], student['id']))
+                sec['available'] -= 1
+                assigned_count += 1
+                details.append({
+                    'student_id': student['id'],
+                    'name':    f"{student['first_name']} {student['last_name']}",
+                    'status':  'assigned',
+                    'section': sec['name'],
+                })
+                placed = True
+                break
+
+        if not placed:
+            skipped_count += 1
+            details.append({
+                'student_id': student['id'],
+                'name':   f"{student['first_name']} {student['last_name']}",
+                'status': 'skipped',
+                'reason': 'No available section slots'
+            })
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'assigned': assigned_count,
+        'skipped':  skipped_count,
+        'details':  details,
+        'message':  f'{assigned_count} student(s) assigned, {skipped_count} skipped.'
+    })
 
 
 # ── ASSIGNMENTS (timetable overview) ──

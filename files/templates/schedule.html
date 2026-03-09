@@ -224,13 +224,21 @@
 
         <div class="form-row">
           <div class="form-group">
-            <label>Day <span class="required-star">*</span></label>
-            <select id="sch_day" name="day" class="form-control checkable" required>
-              <option value="">Select day</option>
+            <label>Day(s) <span class="required-star">*</span></label>
+            <div id="sch_day_wrap" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">
               {% for day in ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'] %}
-              <option value="{{ day }}">{{ day }}</option>
+              <label style="display:flex;align-items:center;gap:6px;padding:6px 12px;
+                            border:1.5px solid var(--border);border-radius:var(--radius-sm);
+                            cursor:pointer;font-size:13px;font-weight:500;
+                            transition:border-color .15s,background .15s;user-select:none;"
+                     class="day-chip" id="chip_{{ day }}">
+                <input type="checkbox" name="day" value="{{ day }}"
+                       class="day-check" style="display:none;"
+                       onchange="onDayChange()">
+                {{ day[:3] }}
+              </label>
               {% endfor %}
-            </select>
+            </div>
           </div>
           <div class="form-group">
             <label>Room <span style="color:#9ca3af;font-weight:400;">(optional)</span></label>
@@ -399,20 +407,20 @@ function setSemester(sem, btn) {
     // Single timetable — filter data
     const filtered = sem === 'all'
       ? scheduleData
-      : scheduleData.filter(s => s.semester === sem);
+      : scheduleData.filter(s => s.semester === sem || s.semester === 'Whole Year');
     renderTimetable(filtered, 'timetableContainer', DELETE_BASE);
   }
 
-  // Filter table rows
+  // Filter table rows — Whole Year entries always visible
   document.querySelectorAll('.sched-row').forEach(row => {
-    const match = sem === 'all' || row.dataset.semester === sem;
+    const match = sem === 'all' || row.dataset.semester === sem || row.dataset.semester === 'Whole Year';
     row.style.display = match ? '' : 'none';
   });
 
   // Update list card heading count
   const visible = sem === 'all'
     ? scheduleData.length
-    : scheduleData.filter(s => s.semester === sem).length;
+    : scheduleData.filter(s => s.semester === sem || s.semester === 'Whole Year').length;
   const heading = document.querySelector('.card-header h2');
   if (heading) {
     const label = sem === 'all' ? 'Schedule Entries' : `Schedule Entries — ${sem}`;
@@ -423,9 +431,9 @@ function setSemester(sem, btn) {
 // ── TIMETABLE ─────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   if (SEMESTERS.length > 1) {
-    // Render one timetable per semester
+    // Render one timetable per semester — include Whole Year entries in each
     SEMESTERS.forEach((sem, i) => {
-      const semData = scheduleData.filter(s => s.semester === sem);
+      const semData = scheduleData.filter(s => s.semester === sem || s.semester === 'Whole Year');
       renderTimetable(semData, `timetable_${i + 1}`, DELETE_BASE);
     });
   } else {
@@ -517,15 +525,36 @@ function scheduleCheck() {
 }
 
 function getFormValues() {
+  const days = Array.from(document.querySelectorAll('.day-check:checked')).map(el => el.value);
   return {
     section_id: String(SECTION_ID),
     teacher_id: document.getElementById('sch_teacher_id').value,
     subject_id: document.getElementById('sch_subject_id').value || null,
-    day:        document.getElementById('sch_day').value,
+    day:        days[0] || '',   // first day for single-day conflict check preview
+    days:       days,
     time_start: document.getElementById('sch_time_start').value,
     time_end:   document.getElementById('sch_time_end').value,
     room:       document.getElementById('sch_room').value.trim(),
   };
+}
+
+function onDayChange() {
+  // Style chips
+  document.querySelectorAll('.day-chip').forEach(chip => {
+    const cb  = chip.querySelector('input[type=checkbox]');
+    if (cb.checked) {
+      chip.style.borderColor = 'rgba(160,24,80,.6)';
+      chip.style.background  = 'rgba(160,24,80,.07)';
+      chip.style.color       = 'rgba(160,24,80,1)';
+      chip.style.fontWeight  = '700';
+    } else {
+      chip.style.borderColor = 'var(--border)';
+      chip.style.background  = '';
+      chip.style.color       = '';
+      chip.style.fontWeight  = '500';
+    }
+  });
+  scheduleCheck();
 }
 
 async function runConflictCheck() {
@@ -542,7 +571,7 @@ async function runConflictCheck() {
     return;
   }
 
-  if (!vals.day || !vals.time_start || !vals.time_end) {
+  if (!vals.days.length || !vals.time_start || !vals.time_end) {
     // Fetch workload-only (incomplete check)
     try {
       const res  = await fetch(API_CONFLICT, {
@@ -561,14 +590,27 @@ async function runConflictCheck() {
   showSpinner();
 
   try {
-    const res  = await fetch(API_CONFLICT, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(vals),
+    // Check conflicts for each selected day, merge results
+    const days = vals.days && vals.days.length ? vals.days : [vals.day];
+    const checks = await Promise.all(days.map(day =>
+      fetch(API_CONFLICT, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ ...vals, day }),
+      }).then(r => r.json()).then(data => ({ day, data }))
+    ));
+
+    // Merge: tag each conflict with its day, combine all
+    const merged = { conflicts: [], ready: true, incomplete: false, workload: checks[0].data.workload };
+    checks.forEach(({ day, data }) => {
+      data.conflicts.forEach(c => {
+        merged.conflicts.push({ ...c, detail: `(${day}) ${c.detail}` });
+      });
+      if (!data.ready) merged.ready = false;
     });
-    const data = await res.json();
+
     hideSpinner();
-    applyResult(data);
+    applyResult(merged);
   } catch(_) {
     hideSpinner();
     hideAllPanels();
@@ -774,6 +816,14 @@ function openAddModal() {
   lastCheckKey = '';
   populateSubjects(allSubjects);
   document.getElementById('subjectHint').textContent = 'Select a strand above to filter subjects, or leave blank to see all.';
+  // Clear day checkboxes
+  document.querySelectorAll('.day-check').forEach(cb => { cb.checked = false; });
+  document.querySelectorAll('.day-chip').forEach(chip => {
+    chip.style.borderColor = 'var(--border)';
+    chip.style.background  = '';
+    chip.style.color       = '';
+    chip.style.fontWeight  = '500';
+  });
   openModal('addScheduleModal');
 }
 </script>

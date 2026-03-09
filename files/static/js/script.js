@@ -45,13 +45,13 @@ function editTeacher(id) {
 // ── EDIT SUBJECT ──────────────────────────────────────────────
 function editSubject(id) {
   fetch(`/subjects/get/${id}`).then(r => r.json()).then(data => {
-    document.getElementById('edit_subject_id').value    = data.id;
-    document.getElementById('edit_subject_code').value  = data.subject_code;
-    document.getElementById('edit_subject_name').value  = data.subject_name;
+    document.getElementById('edit_subject_id').value      = data.id;
+    document.getElementById('edit_subject_code').value    = data.subject_code;
+    document.getElementById('edit_subject_name').value    = data.subject_name;
     document.getElementById('edit_grade_level_sub').value = data.grade_level;
-    document.getElementById('edit_strand').value        = data.strand || '';
-    document.getElementById('edit_semester').value      = data.semester || '';
-    document.getElementById('edit_subject_form').action = `/subjects/edit/${data.id}`;
+    document.getElementById('edit_strand').value          = data.strand || '';
+    document.getElementById('edit_semester').value        = data.semester || '';
+    document.getElementById('edit_subject_form').action   = `/subjects/edit/${data.id}`;
     openModal('editSubjectModal');
   });
 }
@@ -59,11 +59,13 @@ function editSubject(id) {
 // ── EDIT SECTION ──────────────────────────────────────────────
 function editSection(id) {
   fetch(`/sections/get/${id}`).then(r => r.json()).then(data => {
-    document.getElementById('edit_section_id').value       = data.id;
-    document.getElementById('edit_grade_level_sec').value  = data.grade_level;
-    document.getElementById('edit_section_name').value     = data.section_name;
-    document.getElementById('edit_adviser_id').value       = data.adviser_id || '';
-    document.getElementById('edit_section_form').action    = `/sections/edit/${data.id}`;
+    document.getElementById('edit_section_id').value      = data.id;
+    document.getElementById('edit_grade_level_sec').value = data.grade_level;
+    document.getElementById('edit_section_name').value    = data.section_name;
+    document.getElementById('edit_strand_id').value       = data.strand_id || '';
+    document.getElementById('edit_adviser_id').value      = data.adviser_id || '';
+    document.getElementById('edit_student_limit').value   = data.student_limit || 40;
+    document.getElementById('edit_section_form').action   = `/sections/edit/${data.id}`;
     openModal('editSectionModal');
   });
 }
@@ -80,53 +82,9 @@ function editStrand(id) {
   });
 }
 
-// ── DYNAMIC SUBJECT LOADING BY STRAND ────────────────────────
-function loadSubjectsByStrand(strandSelectId, subjectSelectId) {
-  const strandSel  = document.getElementById(strandSelectId);
-  const subjectSel = document.getElementById(subjectSelectId);
-  if (!strandSel || !subjectSel) return;
-
-  strandSel.addEventListener('change', function () {
-    const stid = this.value;
-    subjectSel.innerHTML = '<option value="">Loading...</option>';
-    subjectSel.disabled = true;
-
-    if (!stid) {
-      subjectSel.innerHTML = '<option value="">Select a strand first</option>';
-      return;
-    }
-
-    fetch(`/api/strand/${stid}/subjects`)
-      .then(r => r.json())
-      .then(data => {
-        subjectSel.innerHTML = '<option value="">Select a subject</option>';
-        if (data.length === 0) {
-          subjectSel.innerHTML = '<option value="">No subjects in this strand</option>';
-        } else {
-          data.forEach(s => {
-            const opt = document.createElement('option');
-            opt.value = s.id;
-            opt.textContent = `${s.subject_name} (${s.subject_code})`;
-            subjectSel.appendChild(opt);
-          });
-        }
-        subjectSel.disabled = false;
-      })
-      .catch(() => {
-        subjectSel.innerHTML = '<option value="">Error loading subjects</option>';
-        subjectSel.disabled = false;
-      });
-  });
-}
-
-// Init strand→subject linking on schedule page
-document.addEventListener('DOMContentLoaded', () => {
-  loadSubjectsByStrand('sch_strand_id', 'sch_subject_id');
-});
-
 // ── CONFIRM DELETE ────────────────────────────────────────────
 function confirmDelete(formId) {
-  if (confirm('Are you sure you want to delete this record? This action cannot be undone.')) {
+  if (confirm('Are you sure you want to delete this item? This action cannot be undone.')) {
     document.getElementById(formId).submit();
   }
 }
@@ -147,29 +105,27 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
   const container = document.getElementById(containerId);
   if (!container) return;
 
-  const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday'];
-  const START_HOUR = 7;   // 6:00 AM
-  const END_HOUR   = 17;  // 8:00 PM
-  const SLOT_H     = 32;  // px per 30-min slot
+  const DAYS       = ['Monday','Tuesday','Wednesday','Thursday','Friday'];
+  const START_HOUR = 7;
+  const END_HOUR   = 17;
+  const SLOT_H     = 32;
   const COLS       = DAYS.length;
 
-  // Colors cycling
   const COLORS = [
-  'var(--blue-course)',
-  'var(--teal-course)',
-  'var(--yellow-course)',
-  'var(--pink-course)',
-  'var(--dark-teal-course)',
-  'var(--medium-blue-course)',
-  'var(--mint-green-course)',
-  'var(--green-course)',
-  'var(--orange-course)',
-  'var(--slate-blue-course)',
-  'var(--dark-green-course)',
-  'var(--orange-red-course)'
-];
+    'var(--blue-course)',
+    'var(--teal-course)',
+    'var(--yellow-course)',
+    'var(--pink-course)',
+    'var(--dark-teal-course)',
+    'var(--medium-blue-course)',
+    'var(--mint-green-course)',
+    'var(--green-course)',
+    'var(--orange-course)',
+    'var(--slate-blue-course)',
+    'var(--dark-green-course)',
+    'var(--orange-red-course)'
+  ];
 
-  // Build header
   const totalSlots = (END_HOUR - START_HOUR) * 2;
   const totalH     = totalSlots * SLOT_H;
 
@@ -180,20 +136,17 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
         ${DAYS.map(d => `<div class="tt-day-col">${d.slice(0,3)}</div>`).join('')}
       </div>
       <div style="display:flex;">
-        <!-- Time labels -->
         <div style="width:80px;flex-shrink:0;border-right:1px solid var(--border);position:relative;height:${totalH}px;">`;
 
   for (let h = START_HOUR; h < END_HOUR; h++) {
-    const top = (h - START_HOUR) * 2 * SLOT_H;
+    const top   = (h - START_HOUR) * 2 * SLOT_H;
     const label = h < 12 ? `${h}:00 AM` : h === 12 ? '12:00 PM' : `${h-12}:00 PM`;
     html += `<div style="position:absolute;top:${top}px;left:0;right:0;padding:4px 6px;font-size:10px;color:var(--text-muted);border-top:1px solid var(--border);">${label}</div>`;
   }
   html += `</div>`;
 
-  // Day columns
   html += `<div style="flex:1;display:grid;grid-template-columns:repeat(${COLS},1fr);position:relative;height:${totalH}px;">`;
 
-  // Grid lines
   for (let col = 0; col < COLS; col++) {
     html += `<div style="position:relative;border-right:1px solid #f3f4f6;height:${totalH}px;">`;
     for (let slot = 0; slot < totalSlots; slot++) {
@@ -203,10 +156,10 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
     html += `</div>`;
   }
 
-  // Events — assign colors based on colorBy key
   const colorMap = {};
   let colorIdx = 0;
-  schedules.forEach((sch, i) => {
+
+  schedules.forEach(sch => {
     const dayIdx = DAYS.indexOf(sch.day);
     if (dayIdx === -1) return;
 
@@ -216,7 +169,7 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
     const endMin   = (eh - START_HOUR) * 60 + em;
     if (startMin < 0 || endMin <= startMin) return;
 
-    const topPx = (startMin / 30) * SLOT_H;
+    const topPx    = (startMin / 30) * SLOT_H;
     const heightPx = Math.max(((endMin - startMin) / 30) * SLOT_H, SLOT_H);
     const colPercent = (dayIdx / COLS) * 100;
     const colWidth   = (1 / COLS) * 100;
@@ -231,7 +184,7 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
     const label12 = t => {
       const [hh, mm] = t.split(':').map(Number);
       const suffix = hh < 12 ? 'AM' : 'PM';
-      const h12 = hh % 12 || 12;
+      const h12    = hh % 12 || 12;
       return `${h12}:${String(mm).padStart(2,'0')} ${suffix}`;
     };
 

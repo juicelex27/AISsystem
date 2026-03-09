@@ -4,6 +4,14 @@
 {% block page_subtitle %}Manage student records and enrollment{% endblock %}
 
 {% block header_actions %}
+  <button class="btn btn-secondary" onclick="openAutoAssignModal()">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:16px;height:16px;"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+    Auto-Assign Section
+  </button>
+  <button class="btn btn-danger" onclick="openModal('flushStudentsModal')">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:16px;height:16px;"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+    Flush Students
+  </button>
   <button class="btn btn-secondary" onclick="openModal('bulkAddModal')">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>
     Bulk Import
@@ -56,6 +64,10 @@
   border-radius: var(--radius-sm); padding: 10px 12px;
   margin-bottom: 12px; line-height: 1.7;
 }
+@keyframes spin { to { transform: rotate(360deg); } }
+.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.sortable:hover { color: var(--primary); }
+.sort-icon { font-size: 11px; opacity: .5; margin-left: 3px; }
 </style>
 {% endblock %}
 
@@ -101,6 +113,11 @@
       <option value="{{ sec.section_name }}">Grade {{ sec.grade_level }} – {{ sec.section_name }}</option>
       {% endfor %}
     </select>
+    <select id="filterGender" onchange="filterTable()">
+      <option value="">All Genders</option>
+      <option>Male</option>
+      <option>Female</option>
+    </select>
     <select id="filterStatus" onchange="filterTable()">
       <option value="">All Status</option>
       <option>Enrolled</option>
@@ -122,12 +139,13 @@
       <thead>
         <tr>
           <th>#</th>
-          <th>Student</th>
-          <th>Student ID</th>
-          <th>Grade</th>
-          <th>Section</th>
+          <th class="sortable" data-col="name" onclick="sortTable('name')">Student <span class="sort-icon">↕</span></th>
+          <th class="sortable" data-col="id" onclick="sortTable('id')">Student ID <span class="sort-icon">↕</span></th>
+          <th class="sortable" data-col="grade" onclick="sortTable('grade')">Grade <span class="sort-icon">↕</span></th>
+          <th class="sortable" data-col="section" onclick="sortTable('section')">Section <span class="sort-icon">↕</span></th>
           <th>Strand</th>
-          <th>Status</th>
+          <th class="sortable" data-col="gender" onclick="sortTable('gender')">Gender <span class="sort-icon">↕</span></th>
+          <th class="sortable" data-col="status" onclick="sortTable('status')">Status <span class="sort-icon">↕</span></th>
           <th style="text-align:right;">Actions</th>
         </tr>
       </thead>
@@ -138,7 +156,9 @@
             data-id="{{ st.student_id|lower }}"
             data-section="{{ st.section_name or '' }}"
             data-status="{{ st.enrollment_status or '' }}"
-            data-grade="{{ st.grade_level or '' }}">
+            data-grade="{{ st.grade_level or '' }}"
+            data-gender="{{ st.gender|title if st.gender else '' }}"
+            data-strand-id="{{ st.strand_id or '' }}">
           <td style="color:#9ca3af;font-size:12px;">{{ loop.index }}</td>
           <td>
             <div style="display:flex;align-items:center;gap:10px;">
@@ -153,11 +173,28 @@
           </td>
           <td><span class="badge badge-section">{{ st.student_id }}</span></td>
           <td style="font-size:13px;color:var(--text-secondary);">{{ st.grade_level or '—' }}</td>
-          <td style="font-size:13px;">{{ st.section_name or '—' }}</td>
+          <td style="font-size:13px;">
+            {% if st.section_name %}
+              <a href="{{ url_for('section_student_list', sec_id=st.section_id) }}"
+                 style="color:var(--primary);text-decoration:none;font-weight:500;">
+                {{ st.section_name }}
+              </a>
+            {% else %}—{% endif %}
+          </td>
           <td>
             {% if st.strand_code %}
             <span class="badge badge-strand">{{ st.strand_code }}</span>
             {% else %}<span style="color:var(--text-muted);">—</span>{% endif %}
+          </td>
+          <td>
+            {% set g = st.gender|upper if st.gender else '' %}
+            {% if g == 'MALE' %}
+              <span style="background:#dbeafe;color:#1e40af;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;">♂ Male</span>
+            {% elif g == 'FEMALE' %}
+              <span style="background:#fce7f3;color:#9d174d;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;">♀ Female</span>
+            {% else %}
+              <span style="color:var(--text-muted);">—</span>
+            {% endif %}
           </td>
           <td>
             {% set s = st.enrollment_status or 'Enrolled' %}
@@ -211,8 +248,6 @@
     </div>
     <form method="POST" action="{{ url_for('add_student') }}">
       <div class="modal-body">
-
-        <!-- Personal info -->
         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:12px;">Personal Information</div>
         <div class="form-row">
           <div class="form-group">
@@ -255,7 +290,7 @@
         <div class="form-row">
           <div class="form-group">
             <label>Contact No.</label>
-            <input type="text" name="contact_no" class="form-control" placeholder="09xx-xxx-xxxx">
+            <input type="text" name="contact_no" class="form-control" placeholder="e.g. 09XX-XXX-XXXX">
           </div>
           <div class="form-group">
             <label>Email</label>
@@ -263,20 +298,18 @@
           </div>
         </div>
 
-        <!-- Guardian -->
         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin:16px 0 12px;">Guardian / Parent</div>
         <div class="form-row">
           <div class="form-group">
             <label>Guardian Name</label>
-            <input type="text" name="guardian_name" class="form-control" placeholder="Full name">
+            <input type="text" name="guardian_name" class="form-control">
           </div>
           <div class="form-group">
             <label>Guardian Contact</label>
-            <input type="text" name="guardian_contact" class="form-control" placeholder="09xx-xxx-xxxx">
+            <input type="text" name="guardian_contact" class="form-control">
           </div>
         </div>
 
-        <!-- Academic -->
         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin:16px 0 12px;">Academic</div>
         <div class="form-row">
           <div class="form-group">
@@ -317,7 +350,6 @@
             </select>
           </div>
         </div>
-
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" onclick="closeModal('addStudentModal')">Cancel</button>
@@ -337,15 +369,14 @@
     </div>
     <form id="editStudentForm" method="POST" action="">
       <div class="modal-body">
-
         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:12px;">Personal Information</div>
         <div class="form-row">
           <div class="form-group">
-            <label>First Name *</label>
+            <label>First Name</label>
             <input type="text" id="e_first_name" name="first_name" class="form-control" required>
           </div>
           <div class="form-group">
-            <label>Last Name *</label>
+            <label>Last Name</label>
             <input type="text" id="e_last_name" name="last_name" class="form-control" required>
           </div>
         </div>
@@ -355,7 +386,7 @@
             <input type="text" id="e_middle_name" name="middle_name" class="form-control">
           </div>
           <div class="form-group">
-            <label>Student ID *</label>
+            <label>Student ID</label>
             <input type="text" id="e_student_id" name="student_id" class="form-control" required>
           </div>
         </div>
@@ -440,7 +471,6 @@
             </select>
           </div>
         </div>
-
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" onclick="closeModal('editStudentModal')">Cancel</button>
@@ -477,27 +507,24 @@
     </div>
     <form method="POST" action="{{ url_for('bulk_add_students') }}">
       <div class="modal-body">
-
         <div class="csv-hint">
           <strong>Required columns:</strong> <code>student_id, first_name, last_name</code><br>
-          <strong>Optional:</strong> <code>middle_name, gender, birthdate, address, contact_no, email, guardian_name, guardian_contact, grade_level, enrollment_status</code><br>
+          <strong>Optional:</strong> <code>middle_name, gender, birthdate, address, contact_no, email, guardian_name, guardian_contact, grade_level, enrollment_status, strand_code</code><br>
+          For <code>strand_code</code>, use the strand's code text (e.g. <code>STEM</code>, <code>ABM</code>) — not a number.<br>
           Duplicate <code>student_id</code> values will be skipped automatically.
         </div>
-
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <label style="font-size:12px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;">CSV Data</label>
           <button type="button" class="btn btn-secondary btn-sm" onclick="loadSample()">Load Sample</button>
         </div>
         <textarea name="csv_data" id="csvData" class="bulk-csv-area"
                   placeholder="Paste CSV here, including the header row…"></textarea>
-
         <div id="csvPreview" style="margin-top:12px;display:none;">
           <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:6px;">
             Preview — <span id="previewCount">0</span> row(s)
           </div>
           <div id="previewTable" style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-sm);"></div>
         </div>
-
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" onclick="closeModal('bulkAddModal')">Cancel</button>
@@ -507,32 +534,272 @@
   </div>
 </div>
 
+
+<!-- ── FLUSH STUDENTS MODAL ── -->
+<div class="modal-overlay" id="flushStudentsModal">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header" style="background:#fef2f2;border-bottom:1px solid #fecaca;">
+      <h3 style="color:#991b1b;">⚠ Flush Students</h3>
+      <button class="modal-close" onclick="closeModal('flushStudentsModal')">×</button>
+    </div>
+    <form method="POST" action="{{ url_for('flush_students_by_strand') }}"
+          onsubmit="return confirmFlush(event)">
+      <div class="modal-body">
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:18px;">
+          Permanently delete all students matching the selected filters.
+          This <strong>cannot be undone</strong>. At least one filter is required.
+        </p>
+
+        <div class="form-group">
+          <label>Strand</label>
+          <select name="strand_id" id="flush_strand_id" class="form-control" onchange="updateFlushPreview()">
+            <option value="">— All strands —</option>
+            {% for st in strands %}
+            <option value="{{ st.id }}">{{ st.strand_code }} – {{ st.strand_name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Grade Level</label>
+            <select name="grade_level" id="flush_grade" class="form-control" onchange="updateFlushPreview()">
+              <option value="">— All grades —</option>
+              {% for g in ['7','8','9','10','11','12'] %}
+              <option value="Grade {{ g }}">Grade {{ g }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Enrollment Status</label>
+            <select name="enrollment_status" id="flush_status" class="form-control" onchange="updateFlushPreview()">
+              <option value="">— All statuses —</option>
+              <option>Enrolled</option>
+              <option>Irregular</option>
+              <option>Dropped</option>
+              <option>Graduated</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Live count preview -->
+        <div id="flush-preview" style="margin-top:6px;padding:12px 14px;
+             background:#fef3c7;border:1px solid #fde68a;border-radius:8px;
+             font-size:13px;color:#92400e;display:none;">
+          <strong><span id="flush-count">0</span> student(s)</strong> will be deleted.
+        </div>
+        <div id="flush-no-filter" style="margin-top:6px;padding:12px 14px;
+             background:#f3f4f6;border:1px solid var(--border);border-radius:8px;
+             font-size:13px;color:var(--text-muted);">
+          Select at least one filter to see how many students will be affected.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('flushStudentsModal')">Cancel</button>
+        <button type="submit" id="flush-submit-btn" class="btn btn-danger" disabled>
+          <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;">
+            <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+          </svg>
+          Delete Students
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── AUTO-ASSIGN SECTION MODAL ── -->
+<div class="modal-overlay" id="autoAssignModal">
+  <div class="modal" style="max-width:640px;">
+    <div class="modal-header">
+      <h3>Auto-Assign Section</h3>
+      <button class="modal-close" onclick="closeModal('autoAssignModal')">×</button>
+    </div>
+    <div class="modal-body" id="autoAssignBody">
+
+      <!-- STEP 1: Filter & preview -->
+      <div id="aa-step1">
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:18px;">
+          Choose a strand and/or grade level. The system will distribute all unassigned
+          enrolled students into available sections up to each section's student limit.
+        </p>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Strand</label>
+            <select id="aa_strand" class="form-control" onchange="loadAASections()">
+              <option value="">— Any strand —</option>
+              {% for st in strands %}
+              <option value="{{ st.id }}">{{ st.strand_code }} – {{ st.strand_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Grade Level</label>
+            <select id="aa_grade" class="form-control" onchange="loadAASections()">
+              <option value="">— Any grade —</option>
+              {% for g in ['7','8','9','10','11','12'] %}
+              <option value="Grade {{ g }}">Grade {{ g }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <!-- Available sections preview -->
+        <div id="aa-sections-wrap" style="margin-top:12px;display:none;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;
+                      color:var(--text-muted);margin-bottom:8px;">Available Sections</div>
+          <div id="aa-sections-list"></div>
+        </div>
+
+        <div id="aa-no-sections" style="display:none;margin-top:12px;padding:12px;
+             background:#fef3c7;border-radius:8px;font-size:13px;color:#92400e;">
+          No sections found for the selected filters. Try a different strand or grade.
+        </div>
+
+        <!-- Unassigned student count badge -->
+        <div id="aa-student-info" style="margin-top:14px;padding:12px 14px;
+             background:var(--bg-page);border:1px solid var(--border);
+             border-radius:8px;font-size:13px;display:none;">
+          <strong><span id="aa-student-count">0</span> unassigned enrolled student(s)</strong>
+          match the selected filter and will be processed.
+        </div>
+
+        <div id="aa-no-students" style="display:none;margin-top:12px;padding:12px;
+             background:#fef3c7;border-radius:8px;font-size:13px;color:#92400e;">
+          No unassigned enrolled students match the selected filter.
+        </div>
+      </div>
+
+      <!-- STEP 2: Result -->
+      <div id="aa-step2" style="display:none;">
+        <div id="aa-result-summary" style="margin-bottom:16px;padding:14px;
+             border-radius:8px;font-size:14px;font-weight:600;"></div>
+        <div id="aa-result-details" style="max-height:280px;overflow-y:auto;"></div>
+      </div>
+
+      <!-- Spinner -->
+      <div id="aa-spinner" style="display:none;text-align:center;padding:32px;">
+        <div style="display:inline-block;width:34px;height:34px;border:3px solid var(--border);
+             border-top-color:rgba(160,24,80,.8);border-radius:50%;animation:spin .7s linear infinite;"></div>
+        <p style="margin-top:12px;font-size:13px;color:var(--text-muted);">Assigning students…</p>
+      </div>
+
+    </div>
+    <div class="modal-footer" id="aa-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal('autoAssignModal')">Cancel</button>
+      <button type="button" class="btn btn-primary" id="aa-run-btn"
+              onclick="runAutoAssign()" disabled>
+        <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;">
+          <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+        </svg>
+        Assign Now
+      </button>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 
 
 {% block extra_js %}
 <script>
+// ── FLUSH STUDENTS PREVIEW ────────────────────────────────────
+function updateFlushPreview() {
+  const strandId = document.getElementById('flush_strand_id').value;
+  const grade    = document.getElementById('flush_grade').value;
+  const status   = document.getElementById('flush_status').value;
+
+  const preview  = document.getElementById('flush-preview');
+  const noFilter = document.getElementById('flush-no-filter');
+  const btn      = document.getElementById('flush-submit-btn');
+
+  if (!strandId && !grade && !status) {
+    preview.style.display  = 'none';
+    noFilter.style.display = '';
+    btn.disabled = true;
+    return;
+  }
+
+  // Count matching rows from DOM
+  let count = 0;
+  document.querySelectorAll('.student-row').forEach(row => {
+    const matchStrand = !strandId || row.dataset.strandId === strandId;
+    const matchGrade  = !grade    || row.dataset.grade    === grade;
+    const matchStatus = !status   || row.dataset.status   === status;
+    if (matchStrand && matchGrade && matchStatus) count++;
+  });
+
+  document.getElementById('flush-count').textContent = count;
+  preview.style.display  = '';
+  noFilter.style.display = 'none';
+  btn.disabled = count === 0;
+}
+
+function confirmFlush(e) {
+  const count = document.getElementById('flush-count').textContent;
+  if (!confirm(`Are you sure you want to permanently delete ${count} student(s)? This cannot be undone.`)) {
+    e.preventDefault();
+    return false;
+  }
+  return true;
+}
+
 // ── CLIENT-SIDE FILTER ─────────────────────────────────────────
 function filterTable() {
   const q       = document.getElementById('searchInput').value.toLowerCase();
   const section = document.getElementById('filterSection').value;
   const status  = document.getElementById('filterStatus').value;
   const grade   = document.getElementById('filterGrade').value;
+  const gender  = document.getElementById('filterGender').value;
   const rows    = document.querySelectorAll('.student-row');
   let visible   = 0;
 
   rows.forEach(row => {
-    const matchQ = !q || row.dataset.name.includes(q) || row.dataset.id.includes(q);
-    const matchS = !section || row.dataset.section === section;
-    const matchSt= !status  || row.dataset.status  === status;
-    const matchG = !grade   || row.dataset.grade    === grade;
-    const show   = matchQ && matchS && matchSt && matchG;
+    const matchQ  = !q      || row.dataset.name.includes(q) || row.dataset.id.includes(q);
+    const matchS  = !section|| row.dataset.section === section;
+    const matchSt = !status || row.dataset.status  === status;
+    const matchG  = !grade  || row.dataset.grade   === grade;
+    const matchGn = !gender || row.dataset.gender.toLowerCase() === gender.toLowerCase();
+    const show    = matchQ && matchS && matchSt && matchG && matchGn;
     row.style.display = show ? '' : 'none';
     if (show) visible++;
   });
 
   const noRes = document.getElementById('noResults');
   if (noRes) noRes.style.display = visible === 0 ? 'block' : 'none';
+}
+
+// ── SORT TABLE ────────────────────────────────────────────────
+let sortState = { col: null, asc: true };
+function sortTable(col) {
+  const tbody = document.querySelector('#studentTable tbody');
+  const rows  = Array.from(tbody.querySelectorAll('.student-row'));
+
+  if (sortState.col === col) {
+    sortState.asc = !sortState.asc;
+  } else {
+    sortState.col = col;
+    sortState.asc = true;
+  }
+
+  rows.sort((a, b) => {
+    const va = (a.dataset[col] || '').toLowerCase();
+    const vb = (b.dataset[col] || '').toLowerCase();
+    return sortState.asc ? va.localeCompare(vb) : vb.localeCompare(va);
+  });
+
+  rows.forEach(r => tbody.appendChild(r));
+
+  // Update sort icons
+  document.querySelectorAll('.sortable').forEach(th => {
+    const icon = th.querySelector('.sort-icon');
+    if (th.dataset.col === col) {
+      icon.textContent = sortState.asc ? '↑' : '↓';
+      th.style.color = 'var(--primary)';
+    } else {
+      icon.textContent = '↕';
+      th.style.color = '';
+    }
+  });
 }
 
 // ── ADD MODAL ─────────────────────────────────────────────────
@@ -581,12 +848,14 @@ async function viewStudent(id) {
       </div>
       ${row('Gender',           s.gender)}
       ${row('Birthdate',        s.birthdate)}
+      ${row('Grade Level',      s.grade_level)}
+      ${row('Section',          s.section_name)}
+      ${row('Strand',           s.strand_code ? `${s.strand_code} – ${s.strand_name}` : null)}
       ${row('Contact No.',      s.contact_no)}
       ${row('Email',            s.email)}
       ${row('Address',          s.address)}
       ${row('Guardian',         s.guardian_name)}
       ${row('Guardian Contact', s.guardian_contact)}
-      ${row('Grade Level',      s.grade_level)}
     `;
   } catch(_) {
     body.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Could not load student data.</div>';
@@ -606,31 +875,31 @@ async function editStudent(id) {
       if (el) el.value = val || '';
     };
 
-    set('e_first_name',       s.first_name);
-    set('e_last_name',        s.last_name);
-    set('e_middle_name',      s.middle_name);
-    set('e_student_id',       s.student_id);
-    set('e_gender',           s.gender);
-    set('e_birthdate',        s.birthdate);
-    set('e_address',          s.address);
-    set('e_contact_no',       s.contact_no);
-    set('e_email',            s.email);
-    set('e_guardian_name',    s.guardian_name);
-    set('e_guardian_contact', s.guardian_contact);
-    set('e_grade_level',      s.grade_level);
-    set('e_enrollment_status',s.enrollment_status);
-    set('e_section_id',       s.section_id);
-    set('e_strand_id',        s.strand_id);
+    set('e_first_name',        s.first_name);
+    set('e_last_name',         s.last_name);
+    set('e_middle_name',       s.middle_name);
+    set('e_student_id',        s.student_id);
+    set('e_gender',            s.gender);
+    set('e_birthdate',         s.birthdate);
+    set('e_address',           s.address);
+    set('e_contact_no',        s.contact_no);
+    set('e_email',             s.email);
+    set('e_guardian_name',     s.guardian_name);
+    set('e_guardian_contact',  s.guardian_contact);
+    set('e_grade_level',       s.grade_level);
+    set('e_enrollment_status', s.enrollment_status);
+    set('e_section_id',        s.section_id);
+    set('e_strand_id',         s.strand_id);
 
     openModal('editStudentModal');
   } catch(_) {}
 }
 
 // ── BULK CSV PREVIEW ─────────────────────────────────────────
-const SAMPLE_CSV = `student_id,first_name,last_name,middle_name,gender,grade_level,enrollment_status
-2024-00001,Juan,Dela Cruz,Santos,Male,Grade 11,Enrolled
-2024-00002,Maria,Reyes,Lopez,Female,Grade 11,Enrolled
-2024-00003,Jose,Manalo,,Male,Grade 12,Enrolled`;
+const SAMPLE_CSV = `student_id,first_name,last_name,middle_name,gender,grade_level,enrollment_status,strand_code
+2024-00001,Juan,Dela Cruz,Santos,Male,Grade 11,Enrolled,STEM
+2024-00002,Maria,Reyes,Lopez,Female,Grade 11,Enrolled,ABM
+2024-00003,Jose,Manalo,,Male,Grade 12,Enrolled,HUMSS`;
 
 function loadSample() {
   document.getElementById('csvData').value = SAMPLE_CSV;
@@ -648,7 +917,7 @@ function previewCSV() {
   if (lines.length < 2) { wrap.style.display = 'none'; return; }
 
   const headers = lines[0].split(',').map(h => h.trim());
-  const rows    = lines.slice(1, 6); // preview max 5 rows
+  const rows    = lines.slice(1, 6);
 
   document.getElementById('previewCount').textContent = lines.length - 1;
 
@@ -671,5 +940,215 @@ function previewCSV() {
 }
 
 document.getElementById('csvData').addEventListener('input', previewCSV);
+
+
+// ── AUTO-ASSIGN SECTION ────────────────────────────────────────
+let aaSections     = [];
+let aaStudentCount = 0;
+
+function openAutoAssignModal() {
+  // reset to step 1
+  document.getElementById('aa-step1').style.display         = '';
+  document.getElementById('aa-step2').style.display         = 'none';
+  document.getElementById('aa-spinner').style.display       = 'none';
+  document.getElementById('aa-sections-wrap').style.display = 'none';
+  document.getElementById('aa-no-sections').style.display   = 'none';
+  document.getElementById('aa-student-info').style.display  = 'none';
+  document.getElementById('aa-no-students').style.display   = 'none';
+  document.getElementById('aa-footer').style.display        = '';
+  document.getElementById('aa-footer').innerHTML = `
+    <button type="button" class="btn btn-secondary" onclick="closeModal('autoAssignModal')">Cancel</button>
+    <button type="button" class="btn btn-primary" id="aa-run-btn" onclick="runAutoAssign()" disabled>
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;">
+        <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+      </svg>
+      Assign Now
+    </button>`;
+  document.getElementById('aa_strand').value = '';
+  document.getElementById('aa_grade').value  = '';
+  aaSections     = [];
+  aaStudentCount = 0;
+  openModal('autoAssignModal');
+}
+
+async function loadAASections() {
+  const strandId = document.getElementById('aa_strand').value;
+  const grade    = document.getElementById('aa_grade').value;
+
+  if (!strandId && !grade) {
+    document.getElementById('aa-sections-wrap').style.display = 'none';
+    document.getElementById('aa-no-sections').style.display   = 'none';
+    document.getElementById('aa-student-info').style.display  = 'none';
+    document.getElementById('aa-no-students').style.display   = 'none';
+    document.getElementById('aa-run-btn') && (document.getElementById('aa-run-btn').disabled = true);
+    return;
+  }
+
+  let url = '/api/sections/by_strand?';
+  if (strandId) url += `strand_id=${strandId}&`;
+  if (grade)    url += `grade_level=${encodeURIComponent(grade)}`;
+
+  try {
+    const res  = await fetch(url);
+    const data = await res.json();
+    aaSections = data;
+    renderAASections(data);
+    countAAStudents(strandId, grade);
+  } catch(_) {}
+}
+
+function renderAASections(sections) {
+  const wrap = document.getElementById('aa-sections-wrap');
+  const list = document.getElementById('aa-sections-list');
+  const none = document.getElementById('aa-no-sections');
+  const btn  = document.getElementById('aa-run-btn');
+
+  if (!sections.length) {
+    wrap.style.display = 'none';
+    none.style.display = '';
+    if (btn) btn.disabled = true;
+    return;
+  }
+
+  none.style.display = 'none';
+  wrap.style.display = '';
+
+  const hasSlots = sections.some(s => s.available > 0);
+  if (btn) btn.disabled = !hasSlots || aaStudentCount === 0;
+
+  list.innerHTML = sections.map(sec => {
+    const pct      = Math.min(100, Math.round((sec.student_count / sec.student_limit) * 100));
+    const full     = sec.available === 0;
+    const barColor = full ? '#ef4444' : pct >= 80 ? '#f59e0b' : '#10b981';
+    return `
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;
+           border:1px solid var(--border);border-radius:8px;margin-bottom:6px;
+           background:${full ? '#fafafa' : 'white'};opacity:${full ? '.6' : '1'};">
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:600;color:var(--text-primary);">
+            Grade ${sec.grade_level} — ${sec.section_name}
+          </div>
+          ${sec.adviser ? `<div style="font-size:11px;color:var(--text-muted);">Adviser: ${sec.adviser}</div>` : ''}
+        </div>
+        <div style="text-align:right;min-width:100px;flex-shrink:0;">
+          <div style="font-size:12px;font-weight:700;color:${barColor};">
+            ${sec.student_count} / ${sec.student_limit}
+          </div>
+          <div style="height:5px;border-radius:3px;background:#e5e7eb;margin-top:4px;">
+            <div style="height:100%;border-radius:3px;width:${pct}%;background:${barColor};transition:width .3s;"></div>
+          </div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:3px;">
+            ${full ? 'Full' : sec.available + ' slot' + (sec.available !== 1 ? 's' : '') + ' open'}
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function countAAStudents(strandId, grade) {
+  let count = 0;
+  document.querySelectorAll('.student-row').forEach(row => {
+    const noSection = !row.dataset.section || row.dataset.section === '' || row.dataset.section === 'None' || row.dataset.section === '—';
+    const enrolled  = row.dataset.status === 'Enrolled';
+    const matchGrade = !grade || row.dataset.grade === grade;
+    if (noSection && enrolled && matchGrade) count++;
+  });
+
+  aaStudentCount = count;
+  const info    = document.getElementById('aa-student-info');
+  const noStuds = document.getElementById('aa-no-students');
+  const btn     = document.getElementById('aa-run-btn');
+
+  document.getElementById('aa-student-count').textContent = count;
+
+  if (count > 0) {
+    info.style.display    = '';
+    noStuds.style.display = 'none';
+  } else {
+    info.style.display    = 'none';
+    noStuds.style.display = '';
+    if (btn) btn.disabled = true;
+    return;
+  }
+
+  // Enable button only if there are sections with slots AND students to assign
+  const hasSlots = aaSections.some(s => s.available > 0);
+  if (btn) btn.disabled = !(hasSlots && count > 0);
+}
+
+async function runAutoAssign() {
+  const strandId = document.getElementById('aa_strand').value || null;
+  const grade    = document.getElementById('aa_grade').value  || null;
+
+  // Show spinner, hide everything else
+  document.getElementById('aa-step1').style.display   = 'none';
+  document.getElementById('aa-spinner').style.display = '';
+  document.getElementById('aa-footer').style.display  = 'none';
+
+  try {
+    const res  = await fetch('/students/auto_assign', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        strand_id:  strandId ? +strandId : null,
+        grade_level: grade
+      }),
+    });
+    const data = await res.json();
+
+    document.getElementById('aa-spinner').style.display = 'none';
+    document.getElementById('aa-step2').style.display   = '';
+
+    // Summary banner
+    const summaryEl = document.getElementById('aa-result-summary');
+    const ok = data.assigned > 0;
+    summaryEl.style.background = ok ? '#d1fae5' : '#fef3c7';
+    summaryEl.style.color      = ok ? '#065f46' : '#92400e';
+    summaryEl.style.padding    = '14px 16px';
+    summaryEl.style.borderRadius = '8px';
+    summaryEl.textContent      = data.message || `${data.assigned} assigned, ${data.skipped} skipped.`;
+
+    // Details table
+    const detailsEl = document.getElementById('aa-result-details');
+    if (data.details && data.details.length) {
+      detailsEl.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:4px;">
+          <thead>
+            <tr style="background:var(--bg-page);">
+              <th style="text-align:left;padding:7px 10px;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border);">Student</th>
+              <th style="text-align:left;padding:7px 10px;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border);">Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.details.map(d => `
+              <tr style="border-top:1px solid var(--border);">
+                <td style="padding:7px 10px;">${d.name}</td>
+                <td style="padding:7px 10px;">
+                  ${d.status === 'assigned'
+                    ? `<span style="color:#065f46;font-weight:600;">✓ ${d.section}</span>`
+                    : `<span style="color:#991b1b;">✗ ${d.reason || 'Skipped'}</span>`}
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    } else {
+      detailsEl.innerHTML = '<p style="font-size:13px;color:var(--text-muted);text-align:center;padding:16px;">No students were processed.</p>';
+    }
+
+    // Footer with close + optional reload
+    document.getElementById('aa-footer').innerHTML = `
+      <button type="button" class="btn btn-secondary" onclick="closeModal('autoAssignModal')">Close</button>
+      ${data.assigned > 0
+        ? `<button type="button" class="btn btn-primary" onclick="location.reload()">Reload Page</button>`
+        : ''}`;
+    document.getElementById('aa-footer').style.display = '';
+
+  } catch(err) {
+    document.getElementById('aa-spinner').style.display = 'none';
+    document.getElementById('aa-step1').style.display   = '';
+    document.getElementById('aa-footer').style.display  = '';
+    alert('An error occurred. Please try again.');
+  }
+}
 </script>
 {% endblock %}

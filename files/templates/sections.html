@@ -16,10 +16,21 @@
   {% for item in sections_data %}
   {% set sec = item.section %}
   {% set cnt = item.schedule_count %}
+  {% set scnt = item.student_count %}
+  {% set slim = item.student_limit %}
+  {% set slots = slim - scnt %}
   <div class="section-card">
     <div class="section-card-header">
-      <div class="section-grade-badge">Grade {{ sec.grade_level }}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+        <div class="section-grade-badge">Grade {{ sec.grade_level }}</div>
+        {% if sec.strand_code %}
+          <span class="badge badge-strand" style="font-size:11px;">{{ sec.strand_code }}</span>
+        {% endif %}
+      </div>
       <div class="section-name">{{ sec.section_name }}</div>
+      {% if sec.strand_name %}
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">{{ sec.strand_name }}</div>
+      {% endif %}
     </div>
     <div class="section-card-body">
       <div class="section-adviser">
@@ -35,6 +46,17 @@
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3h-4.18C14.4 1.84 13.3 1 12 1c-1.3 0-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm-2 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
         <strong>{{ cnt }}</strong> schedule entr{{ 'ies' if cnt != 1 else 'y' }}
       </div>
+      <div class="section-meta" style="margin-top:2px;">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+        <strong>{{ scnt }}</strong> / {{ slim }} students
+        {% if slots <= 0 %}
+          <span style="background:#fee2e2;color:#991b1b;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:4px;">Full</span>
+        {% elif slots <= 5 %}
+          <span style="background:#fef3c7;color:#92400e;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:4px;">{{ slots }} left</span>
+        {% else %}
+          <span style="background:#d1fae5;color:#065f46;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:4px;">{{ slots }} open</span>
+        {% endif %}
+      </div>
     </div>
     <div class="section-card-footer">
       <div class="section-card-actions">
@@ -48,10 +70,16 @@
           </button>
         </form>
       </div>
-      <a href="{{ url_for('schedule', sec_id=sec.id) }}" class="btn btn-primary btn-sm">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
-        View Schedule
-      </a>
+      <div style="display:flex;gap:6px;">
+        <a href="{{ url_for('section_student_list', sec_id=sec.id) }}" class="btn btn-secondary btn-sm">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+          Students
+        </a>
+        <a href="{{ url_for('schedule', sec_id=sec.id) }}" class="btn btn-primary btn-sm">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+          Schedule
+        </a>
+      </div>
     </div>
   </div>
   {% endfor %}
@@ -66,7 +94,8 @@
 </div>
 {% endif %}
 
-<!-- ADD SECTION MODAL -->
+
+<!-- ── ADD SECTION MODAL ── -->
 <div class="modal-overlay" id="addSectionModal">
   <div class="modal">
     <div class="modal-header">
@@ -91,13 +120,29 @@
           </div>
         </div>
         <div class="form-group">
-          <label>Adviser <span style="color:#9ca3af;font-weight:400;">(optional)</span></label>
-          <select name="adviser_id" class="form-control">
-            <option value="">No adviser</option>
-            {% for t in teachers %}
-            <option value="{{ t.id }}">{{ t.first_name }} {{ t.last_name }}</option>
+          <label>Strand <span style="color:#9ca3af;font-weight:400;">(optional)</span></label>
+          <select name="strand_id" class="form-control">
+            <option value="">— No strand assigned —</option>
+            {% for st in strands %}
+            <option value="{{ st.id }}">{{ st.strand_code }} – {{ st.strand_name }}</option>
             {% endfor %}
           </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Student Limit</label>
+            <input type="number" name="student_limit" class="form-control"
+                   value="40" min="1" max="999" placeholder="e.g. 40">
+          </div>
+          <div class="form-group">
+            <label>Adviser <span style="color:#9ca3af;font-weight:400;">(optional)</span></label>
+            <select name="adviser_id" class="form-control">
+              <option value="">No adviser</option>
+              {% for t in teachers %}
+              <option value="{{ t.id }}">{{ t.first_name }} {{ t.last_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
         </div>
       </div>
       <div class="modal-footer">
@@ -108,7 +153,8 @@
   </div>
 </div>
 
-<!-- EDIT SECTION MODAL -->
+
+<!-- ── EDIT SECTION MODAL ── -->
 <div class="modal-overlay" id="editSectionModal">
   <div class="modal">
     <div class="modal-header">
@@ -133,13 +179,29 @@
           </div>
         </div>
         <div class="form-group">
-          <label>Adviser</label>
-          <select id="edit_adviser_id" name="adviser_id" class="form-control">
-            <option value="">No adviser</option>
-            {% for t in teachers %}
-            <option value="{{ t.id }}">{{ t.first_name }} {{ t.last_name }}</option>
+          <label>Strand <span style="color:#9ca3af;font-weight:400;">(optional)</span></label>
+          <select id="edit_strand_id" name="strand_id" class="form-control">
+            <option value="">— No strand assigned —</option>
+            {% for st in strands %}
+            <option value="{{ st.id }}">{{ st.strand_code }} – {{ st.strand_name }}</option>
             {% endfor %}
           </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Student Limit</label>
+            <input type="number" id="edit_student_limit" name="student_limit"
+                   class="form-control" min="1" max="999" placeholder="e.g. 40">
+          </div>
+          <div class="form-group">
+            <label>Adviser</label>
+            <select id="edit_adviser_id" name="adviser_id" class="form-control">
+              <option value="">No adviser</option>
+              {% for t in teachers %}
+              <option value="{{ t.id }}">{{ t.first_name }} {{ t.last_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
         </div>
       </div>
       <div class="modal-footer">
