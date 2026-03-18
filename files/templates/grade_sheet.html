@@ -1,0 +1,545 @@
+{% extends "layout.html" %}
+{% block title %}Grade Sheet — {{ section.section_name }}{% endblock %}
+{% block page_title %}Grade Sheet{% endblock %}
+{% block page_subtitle %}{{ section.section_name }} · Grade {{ section.grade_level }}{% if section.strand_code %} · {{ section.strand_code }}{% endif %}{% endblock %}
+
+{% block header_actions %}
+  <a href="{{ url_for('grades_home') }}" class="btn btn-secondary">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+    Back
+  </a>
+  {% if sel_sub_id %}
+  <form method="GET" action="{{ url_for('admin_export_grades', sec_id=section.id) }}" style="display:flex;align-items:center;gap:6px;">
+    <input type="hidden" name="subject_id" value="{{ sel_sub_id }}">
+    <select name="period" class="form-control" style="width:140px;padding:6px 10px;font-size:13px;">
+      <option value="all">All Periods</option>
+      <option value="Prelim">Prelim</option>
+      <option value="Midterm">Midterm</option>
+      <option value="Semi-Final">Semi-Final</option>
+      <option value="Final">Final</option>
+    </select>
+    <button type="submit" class="btn btn-secondary">
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+      Export CSV
+    </button>
+  </form>
+  <button class="btn btn-secondary" onclick="document.getElementById('adminCsvInput').click()">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
+    Import CSV
+  </button>
+  <input type="file" id="adminCsvInput" accept=".csv" style="display:none" onchange="handleAdminImport(this)">
+  {% endif %}
+  {% if sel_sub_id %}
+  <div style="display:flex;align-items:center;gap:6px;">
+    <select id="clearPeriodSel" class="form-control" style="width:140px;padding:6px 10px;font-size:13px;">
+      <option value="">— Period —</option>
+      <option value="Prelim">Prelim</option>
+      <option value="Midterm">Midterm</option>
+      <option value="Semi-Final">Semi-Final</option>
+      <option value="Final">Final</option>
+    </select>
+    <button class="btn btn-danger btn-sm" onclick="clearGrades()" style="white-space:nowrap;">
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+      Clear Grades
+    </button>
+  </div>
+  {% endif %}
+  <button class="btn btn-secondary" onclick="window.print()">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/></svg>
+    Print
+  </button>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+.sem-tab-bar { display:flex; gap:8px; margin-bottom:20px; }
+.sem-tab {
+  padding:8px 20px; border-radius:99px; font-size:13px; font-weight:600;
+  border:1.5px solid var(--border); background:#fff; color:var(--text-secondary);
+  cursor:pointer; text-decoration:none; transition:all .15s;
+}
+.sem-tab:hover { border-color:rgba(160,24,80,.4); color:rgba(160,24,80,1); }
+.sem-tab.active { background:var(--brand-gradient); border-color:transparent; color:#fff; box-shadow:0 2px 8px rgba(160,24,80,.25); }
+
+.subject-tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:20px; }
+.subject-tab {
+  padding:6px 14px; border-radius:99px; font-size:12px; font-weight:600;
+  border:1.5px solid var(--border); background:#fff; color:var(--text-secondary);
+  cursor:pointer; text-decoration:none; transition:all .15s;
+}
+.subject-tab:hover { border-color:rgba(160,24,80,.4); color:rgba(160,24,80,1); }
+.subject-tab.active { background:var(--brand-gradient); border-color:transparent; color:#fff; box-shadow:0 2px 8px rgba(160,24,80,.25); }
+
+.grade-table { width:100%; border-collapse:collapse; font-size:13px; }
+.grade-table th { padding:10px 8px; text-align:center; font-size:11px; font-weight:700;
+  text-transform:uppercase; letter-spacing:.4px; color:var(--text-muted);
+  border-bottom:2px solid var(--border); white-space:nowrap; }
+.grade-table th.col-name { text-align:left; }
+.grade-table td { padding:6px 8px; border-bottom:1px solid var(--border); vertical-align:middle; }
+.grade-table tbody tr:hover { background:#f9fafb; }
+.grade-table tbody tr:last-child td { border-bottom:none; }
+
+.grade-input {
+  width:58px; padding:4px 6px; border:1.5px solid var(--border); border-radius:6px;
+  font-size:12px; text-align:center; font-family:'Inter',sans-serif; transition:border-color .15s;
+}
+.grade-input:focus { outline:none; border-color:rgba(160,24,80,.5); box-shadow:0 0 0 3px rgba(160,24,80,.1); }
+.grade-input.saved { border-color:#22c55e; background:#f0fdf4; }
+.grade-input.error { border-color:#ef4444; background:#fef2f2; }
+.grade-input:disabled { background:#f3f4f6; color:#9ca3af; cursor:not-allowed; border-color:#e5e7eb; }
+
+.p-group { border-left:2px solid var(--border); }
+.p-header { background:#f8fafc; font-size:11px; font-weight:800; text-align:center; padding:8px 4px !important; }
+.p-prelim    { color:#2563eb; } .p-midterm   { color:#7c3aed; }
+.p-semifinal { color:#d97706; } .p-final     { color:#16a34a; }
+
+.status-pill { display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:99px;font-size:10px;font-weight:700; }
+.status-Draft     { background:#f1f5f9;color:#64748b;border:1px solid #cbd5e1; }
+.status-Submitted { background:#dbeafe;color:#1e40af;border:1px solid #bfdbfe; }
+.status-Approved  { background:#dcfce7;color:#166534;border:1px solid #86efac; }
+.status-Locked    { background:#fef3c7;color:#92400e;border:1px solid #fcd34d; }
+
+.q-actions { display:flex;gap:4px;justify-content:center;margin-top:5px;flex-wrap:wrap; }
+.q-action-btn { padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;border:none;cursor:pointer;transition:all .15s; }
+.btn-approve { background:#22c55e;color:#fff; } .btn-approve:hover { background:#16a34a; }
+.btn-lock    { background:#f59e0b;color:#fff; } .btn-lock:hover   { background:#d97706; }
+.btn-unlock  { background:#6b7280;color:#fff; } .btn-unlock:hover { background:#374151; }
+.btn-log     { background:#e0e7ff;color:#3730a3; } .btn-log:hover  { background:#c7d2fe; }
+
+.computed-grade { font-weight:700;font-size:13px;text-align:center;min-width:44px;display:inline-block; }
+.grade-pass { color:#16a34a; } .grade-fail { color:#dc2626; } .grade-none { color:#9ca3af; }
+
+.legend { display:flex;gap:16px;font-size:11px;color:var(--text-muted);flex-wrap:wrap; }
+.legend-item { display:flex;align-items:center;gap:4px; }
+.legend-dot { width:8px;height:8px;border-radius:50%; }
+
+.reason-overlay { display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:2000;align-items:center;justify-content:center;padding:20px; }
+.reason-overlay.active { display:flex; }
+.reason-box { background:#fff;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.2);width:100%;max-width:440px;padding:24px;animation:slideUp .2s ease; }
+.log-entry { padding:8px 0;border-bottom:1px solid var(--border);font-size:12px; }
+.log-entry:last-child { border-bottom:none; }
+.log-comp { display:inline-block;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700;background:#e0e7ff;color:#3730a3; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- Semester tabs -->
+{% set sem1_count = subjects_all | selectattr('semester','equalto','1st Semester') | list | length %}
+{% set sem2_count = subjects_all | selectattr('semester','equalto','2nd Semester') | list | length %}
+{% set wy_count   = subjects_all | selectattr('semester','equalto','Whole Year') | list | length %}
+{% set na_count   = subjects_all | rejectattr('semester','in',['1st Semester','2nd Semester','Whole Year']) | list | length %}
+<div class="sem-tab-bar">
+  <a href="{{ url_for('grade_sheet', sec_id=section.id, sem='1st Semester') }}"
+     class="sem-tab {{ 'active' if active_sem == '1st Semester' else '' }}">
+    1st Semester
+    <span style="font-size:10px;opacity:.75;margin-left:4px;">
+      ({{ sem1_count + wy_count + na_count }} subjects)
+    </span>
+  </a>
+  <a href="{{ url_for('grade_sheet', sec_id=section.id, sem='2nd Semester') }}"
+     class="sem-tab {{ 'active' if active_sem == '2nd Semester' else '' }}">
+    2nd Semester
+    <span style="font-size:10px;opacity:.75;margin-left:4px;">
+      ({{ sem2_count + wy_count + na_count }} subjects)
+    </span>
+  </a>
+  {% if wy_count > 0 %}
+  <span style="display:inline-flex;align-items:center;gap:5px;padding:8px 14px;font-size:12px;color:#b45309;border:1.5px solid #fde68a;border-radius:99px;background:#fffbeb;font-weight:600;">
+    📅 {{ wy_count }} Whole Year subject{{ 's' if wy_count != 1 else '' }} appear in both tabs
+  </span>
+  {% endif %}
+</div>
+
+<!-- Subject tabs -->
+{% if subjects %}
+<div class="subject-tabs">
+  {% for sub in subjects %}
+  <a href="{{ url_for('grade_sheet', sec_id=section.id, sem=active_sem, subject_id=sub.id) }}"
+     class="subject-tab {{ 'active' if sub.id == sel_sub_id else '' }}">
+    {{ sub.subject_name }}
+    {% if sub.semester == 'Whole Year' %}<span style="font-size:10px;margin-left:3px;opacity:.8;"> · Whole Year</span>{% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if sel_subject %}
+<div class="content-card" style="margin-bottom:0;">
+
+  <div style="padding:14px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--border);">
+    <div>
+      <div style="font-size:16px;font-weight:800;">{{ sel_subject.subject_name }}</div>
+      <div style="font-size:12px;color:var(--text-muted);">
+        {{ sel_subject.subject_code }}
+        {% if sel_subject.semester %} · <span style="color:{% if sel_subject.semester=='1st Semester' %}#1e40af{% elif sel_subject.semester=='2nd Semester' %}#7e22ce{% else %}#854d0e{% endif %};">{{ sel_subject.semester }}</span>{% endif %}
+      </div>
+    </div>
+    <div style="margin-left:auto;display:flex;gap:20px;">
+      <div style="text-align:center;"><div style="font-size:20px;font-weight:800;">{{ students|length }}</div><div style="font-size:10px;text-transform:uppercase;color:var(--text-muted);">Students</div></div>
+      <div style="text-align:center;"><div style="font-size:20px;font-weight:800;color:#16a34a;">{{ students|selectattr('passing')|list|length }}</div><div style="font-size:10px;text-transform:uppercase;color:var(--text-muted);">Passing</div></div>
+      <div style="text-align:center;"><div style="font-size:20px;font-weight:800;color:#dc2626;">{{ students|rejectattr('passing')|selectattr('average')|list|length }}</div><div style="font-size:10px;text-transform:uppercase;color:var(--text-muted);">Failing</div></div>
+    </div>
+  </div>
+
+  <div style="padding:10px 20px;border-bottom:1px solid var(--border);">
+    <div class="legend">
+      <span class="legend-item"><span class="legend-dot" style="background:#3b82f6;"></span> WW = Written Works (30%)</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#8b5cf6;"></span> PT = Performance Tasks (50%)</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#f59e0b;"></span> QA = Quarterly Assessment (20%)</span>
+      <span style="margin-left:auto;font-weight:600;">Passing: {{ passing_grade }}</span>
+    </div>
+  </div>
+
+  <div style="overflow-x:auto;">
+    <table class="grade-table">
+      <thead>
+        <tr>
+          <th class="col-name" rowspan="2" style="min-width:160px;text-align:left;padding-left:16px;">Student</th>
+          {% set period_classes = {'Prelim':'p-prelim','Midterm':'p-midterm','Semi-Final':'p-semifinal','Final':'p-final'} %}
+          {% for p in quarters %}
+          <th class="p-header {{ period_classes[p] }} p-group" colspan="4">
+            <div style="display:flex;align-items:center;justify-content:center;gap:6px;">
+              {{ p }}
+              {% set ps = q_statuses.get(p, 'Draft') %}
+              <span class="status-pill status-{{ ps }}" id="status_{{ p }}">
+                {{ '✏️' if ps=='Draft' else ('📤' if ps=='Submitted' else ('✅' if ps=='Approved' else '🔒')) }} {{ ps }}
+              </span>
+            </div>
+            <div class="q-actions" id="qactions_{{ p }}"></div>
+          </th>
+          {% endfor %}
+          <th rowspan="2" style="min-width:56px;">Avg</th>
+        </tr>
+        <tr>
+          {% for p in quarters %}
+          <th class="p-group" style="color:#2563eb;">WW</th>
+          <th style="color:#8b5cf6;">PT</th>
+          <th style="color:#f59e0b;">QA</th>
+          <th>Grade</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for sg in students %}{% set st = sg.student %}
+        <tr>
+          <td style="padding-left:16px;">
+            <div style="font-weight:600;font-size:13px;">{{ st.last_name }}, {{ st.first_name }}{% if st.middle_name %} {{ st.middle_name[0] }}.{% endif %}</div>
+            <div style="font-size:11px;color:var(--text-muted);">{{ st.student_id }}</div>
+          </td>
+          {% for p in quarters %}{% set qd = sg.quarters[p] %}
+          <td class="p-group">
+            <input type="number" min="0" max="100" step="0.01" class="grade-input"
+              data-student="{{ st.id }}" data-subject="{{ sel_sub_id }}"
+              data-section="{{ section.id }}" data-quarter="{{ p }}" data-component="written_works"
+              value="{{ qd.ww if qd.ww is not none else '' }}" title="Written Works – {{ p }}">
+          </td>
+          <td>
+            <input type="number" min="0" max="100" step="0.01" class="grade-input"
+              data-student="{{ st.id }}" data-subject="{{ sel_sub_id }}"
+              data-section="{{ section.id }}" data-quarter="{{ p }}" data-component="performance_tasks"
+              value="{{ qd.pt if qd.pt is not none else '' }}" title="Performance Tasks – {{ p }}">
+          </td>
+          <td>
+            <input type="number" min="0" max="100" step="0.01" class="grade-input"
+              data-student="{{ st.id }}" data-subject="{{ sel_sub_id }}"
+              data-section="{{ section.id }}" data-quarter="{{ p }}" data-component="quarterly_assessment"
+              value="{{ qd.qa if qd.qa is not none else '' }}" title="Quarterly Assessment – {{ p }}">
+          </td>
+          <td>
+            <span class="computed-grade {{ 'grade-pass' if qd.computed is not none and qd.computed >= passing_grade else ('grade-fail' if qd.computed is not none else 'grade-none') }}"
+                  id="computed_{{ st.id }}_{{ p|replace('-','_') }}">
+              {{ '%.2f'|format(qd.computed) if qd.computed is not none else '—' }}
+            </span>
+          </td>
+          {% endfor %}
+          <td style="font-weight:800;font-size:13px;text-align:center;">
+            <span id="avg_{{ st.id }}" class="{{ 'grade-pass' if sg.average is not none and sg.average >= passing_grade else ('grade-fail' if sg.average is not none else 'grade-none') }}">
+              {{ '%.2f'|format(sg.average) if sg.average is not none else '—' }}
+            </span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div id="editLogPanel" style="display:none;padding:16px 20px;border-top:1px solid var(--border);">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:700;">Edit History — <span id="logPeriodLabel"></span></div>
+      <button onclick="document.getElementById('editLogPanel').style.display='none'" class="btn btn-secondary btn-sm">Close</button>
+    </div>
+    <div id="editLogEntries"><em style="color:var(--text-muted);font-size:13px;">Loading…</em></div>
+  </div>
+</div>
+
+{% elif subjects %}
+<div class="content-card"><div class="empty-state">
+  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+  <h3>Select a subject above</h3><p>Click a subject tab to start encoding grades.</p>
+</div></div>
+{% else %}
+<div class="content-card"><div class="empty-state">
+  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+  <h3>No subjects scheduled</h3><p>Add schedule entries for this section first.</p>
+</div></div>
+{% endif %}
+
+<div class="reason-overlay" id="reasonModal">
+  <div class="reason-box">
+    <div style="font-size:15px;font-weight:800;margin-bottom:6px;" id="reasonTitle">Reason Required</div>
+    <div style="font-size:13px;color:var(--text-muted);margin-bottom:14px;" id="reasonSubtitle">Please provide a reason.</div>
+    <textarea id="reasonInput" class="form-control" rows="3" placeholder="Enter reason…" style="resize:vertical;margin-bottom:14px;"></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-secondary" onclick="closeReasonModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmReason()">Confirm</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const SAVE_URL    = '/grades/save_cell';
+const APPROVE_URL = '/grades/approve';
+const STATUS_URL  = '/grades/submission_status';
+const LOG_URL     = '/grades/edit_log';
+const SUB_ID   = {{ sel_sub_id or 'null' }};
+const SEC_ID   = {{ section.id }};
+const PASSING  = {{ passing_grade }};
+const PERIODS  = {{ quarters | tojson }};
+
+let qStatus = {};
+PERIODS.forEach(p => qStatus[p] = 'Draft');
+let pendingReasonCb = null, saveTimers = {};
+
+document.addEventListener('DOMContentLoaded', async () => {
+  if (SUB_ID) { await loadStatuses(); applyAll(); }
+  document.querySelectorAll('.grade-input').forEach(el => {
+    el.addEventListener('change', () => queueSave(el));
+    el.addEventListener('blur',   () => queueSave(el));
+  });
+});
+
+async function loadStatuses() {
+  try {
+    const r = await fetch(`${STATUS_URL}?subject_id=${SUB_ID}&section_id=${SEC_ID}`);
+    const d = await r.json();
+    PERIODS.forEach(p => { if (d[p]) qStatus[p] = d[p].status; });
+  } catch(e) {}
+}
+
+function applyAll() { PERIODS.forEach(p => updatePeriodUI(p, qStatus[p])); }
+
+function pidSafe(p) { return p.replace(/-/g,'_').replace(/ /g,'_'); }
+
+function updatePeriodUI(period, status) {
+  qStatus[period] = status;
+  const pill = document.getElementById(`status_${period}`);
+  const acts = document.getElementById(`qactions_${period}`);
+  if (!pill || !acts) return;
+
+  const icons = {Draft:'✏️', Submitted:'📤', Approved:'✅', Locked:'🔒'};
+  pill.className = `status-pill status-${status}`;
+  pill.textContent = `${icons[status]||''} ${status}`;
+
+  acts.innerHTML = '';
+  if (status === 'Draft') {
+    acts.innerHTML = `<button class="q-action-btn btn-approve" onclick="doAction('approve','${period}')">Approve</button>`;
+  } else if (status === 'Submitted') {
+    acts.innerHTML = `<button class="q-action-btn btn-approve" onclick="doAction('approve','${period}')">Approve</button>
+      <button class="q-action-btn btn-unlock" onclick="doAction('revert','${period}')" style="background:#6b7280;">Revert</button>
+      <span style="font-size:10px;color:#1e40af;font-style:italic;"> Teacher submitted</span>`;
+  } else if (status === 'Approved') {
+    acts.innerHTML = `<button class="q-action-btn btn-lock" onclick="doAction('lock','${period}')">Lock</button>
+      <button class="q-action-btn btn-unlock" onclick="doAction('revert','${period}')" style="background:#6b7280;">Revert</button>
+      <button class="q-action-btn btn-log" onclick="showLog('${period}')">Log</button>`;
+  } else if (status === 'Locked') {
+    acts.innerHTML = `<button class="q-action-btn btn-unlock" onclick="doAction('unlock','${period}')">Unlock</button>
+      <button class="q-action-btn btn-log" onclick="showLog('${period}')">Log</button>`;
+  }
+
+  document.querySelectorAll(`.grade-input[data-quarter="${period}"]`).forEach(el => {
+    el.disabled = status !== 'Draft';
+  });
+}
+
+async function doAction(action, period) {
+  if (action === 'unlock') {
+    openReason('Unlock Grades', `Reason for unlocking ${period} grades:`,
+      r => submitAction(action, period, r));
+    return;
+  }
+  const msgs = {
+    approve: `Approve ${period} grades? Editing will be disabled.`,
+    lock:    `Lock ${period} grades? (Unlockable by admin.)`,
+    revert:  `Revert ${period} back to Draft? Approval will be removed and the teacher can edit again.`
+  };
+  if (!confirm(msgs[action])) return;
+  await submitAction(action, period, '');
+}
+
+async function submitAction(action, period, reason) {
+  try {
+    const r = await fetch(APPROVE_URL, {method:'POST',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({subject_id:SUB_ID, section_id:SEC_ID, quarter:period, action, reason})});
+    const d = await r.json();
+    if (d.ok) { updatePeriodUI(period, d.status); toast(`${period} ${d.status.toLowerCase()}.`, 'success'); }
+    else toast(d.error || 'Action failed.', 'error');
+  } catch(e) { toast('Network error.', 'error'); }
+}
+
+function queueSave(el) {
+  const k = `${el.dataset.student}_${el.dataset.quarter}_${el.dataset.component}`;
+  clearTimeout(saveTimers[k]);
+  saveTimers[k] = setTimeout(() => initSave(el), 400);
+}
+
+async function initSave(el) {
+  const val = el.value.trim();
+  const v   = val === '' ? null : parseFloat(val);
+  if (val !== '' && (isNaN(v) || v < 0 || v > 100)) { el.classList.add('error'); return; }
+  el.classList.remove('error','saved');
+  await attemptSave(el, v, '');
+}
+
+async function attemptSave(el, v, reason) {
+  const p = {
+    student_id: parseInt(el.dataset.student), subject_id: parseInt(el.dataset.subject),
+    section_id: parseInt(el.dataset.section), quarter: el.dataset.quarter,
+    component: el.dataset.component, value: v, reason
+  };
+  try {
+    const r = await fetch(SAVE_URL, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
+    const d = await r.json();
+    if (d.ok) {
+      el.classList.add('saved'); setTimeout(()=>el.classList.remove('saved'),1500);
+      const safe = pidSafe(p.quarter);
+      const cEl  = document.getElementById(`computed_${p.student_id}_${safe}`);
+      if (cEl) {
+        if (d.computed !== null) {
+          cEl.textContent = d.computed.toFixed(2);
+          cEl.className   = 'computed-grade ' + (d.passing ? 'grade-pass' : 'grade-fail');
+        } else {
+          cEl.textContent = '—';
+          cEl.className   = 'computed-grade grade-none';
+        }
+      }
+      recalcAvg(p.student_id);
+    } else if (d.need_reason) {
+      openReason('Reason Required', 'Provide a reason for this grade change.',
+        r2 => attemptSave(el, v, r2));
+    } else if (r.status === 403) {
+      el.classList.add('error'); toast(d.error||'Grades are locked.','error');
+    } else { el.classList.add('error'); toast(d.error||'Save failed.','error'); }
+  } catch(e) { el.classList.add('error'); }
+}
+
+function recalcAvg(sid) {
+  let sum=0, cnt=0;
+  PERIODS.forEach(p => {
+    const safe = pidSafe(p);
+    const el = document.getElementById(`computed_${sid}_${safe}`);
+    if (el && el.textContent !== '—') { sum += parseFloat(el.textContent); cnt++; }
+  });
+  const el = document.getElementById(`avg_${sid}`);
+  if (!el) return;
+  if (cnt > 0) { const a=sum/cnt; el.textContent=a.toFixed(2); el.className=a>=PASSING?'grade-pass':'grade-fail'; }
+  else { el.textContent='—'; el.className='grade-none'; }
+}
+
+async function showLog(period) {
+  const panel = document.getElementById('editLogPanel');
+  document.getElementById('logPeriodLabel').textContent = period;
+  panel.style.display = '';
+  const box = document.getElementById('editLogEntries');
+  box.innerHTML = '<em style="color:var(--text-muted);font-size:13px;">Loading…</em>';
+  panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+  try {
+    const r = await fetch(`${LOG_URL}?subject_id=${SUB_ID}&section_id=${SEC_ID}&quarter=${encodeURIComponent(period)}`);
+    const logs = await r.json();
+    if (!logs.length) { box.innerHTML='<em style="color:var(--text-muted);font-size:13px;">No edits recorded.</em>'; return; }
+    const CL = {written_works:'Written Works',performance_tasks:'Performance Tasks',quarterly_assessment:'Quarterly Assessment',midterm:'Midterm',finals:'Finals'};
+    box.innerHTML = logs.map(l => `
+      <div class="log-entry">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;">
+          <strong>${l.student_name}</strong>
+          <span class="log-comp">${CL[l.component]||l.component}</span>
+          <span style="color:#9ca3af;font-size:11px;margin-left:auto;">${l.edited_at}</span>
+        </div>
+        <div style="color:var(--text-secondary);">${l.old_value??'—'} → <strong>${l.new_value??'—'}</strong> · by ${l.edited_by}</div>
+        <div style="margin-top:3px;font-style:italic;color:#6b7280;">"${l.reason}"</div>
+      </div>`).join('');
+  } catch(e) { box.innerHTML='<em style="color:#dc2626;">Failed to load.</em>'; }
+}
+
+function openReason(title, subtitle, cb) {
+  document.getElementById('reasonTitle').textContent    = title;
+  document.getElementById('reasonSubtitle').textContent = subtitle;
+  document.getElementById('reasonInput').value          = '';
+  pendingReasonCb = cb;
+  document.getElementById('reasonModal').classList.add('active');
+  setTimeout(() => document.getElementById('reasonInput').focus(), 80);
+}
+function closeReasonModal() {
+  document.getElementById('reasonModal').classList.remove('active');
+  pendingReasonCb = null;
+}
+function confirmReason() {
+  const r = document.getElementById('reasonInput').value.trim();
+  if (!r) { document.getElementById('reasonInput').focus(); return; }
+  closeReasonModal();
+  if (pendingReasonCb) pendingReasonCb(r);
+}
+document.getElementById('reasonInput').addEventListener('keydown', e => {
+  if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); confirmReason(); }
+});
+
+function toast(msg, type) {
+  const t = document.createElement('div');
+  t.style.cssText=`position:fixed;bottom:24px;right:24px;z-index:9999;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;box-shadow:0 4px 20px rgba(0,0,0,.15);background:${type==='success'?'#22c55e':'#ef4444'};color:#fff;animation:slideUp .2s ease;`;
+  t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),3500);
+}
+
+async function clearGrades() {
+  const period = document.getElementById('clearPeriodSel').value;
+  if (!period) { toast('Please select a grading period to clear.', 'error'); return; }
+  if (!confirm(`Clear ALL grades for ${period}?\n\nThis will permanently delete all WW, PT and QA entries for every student in this subject for ${period}. This cannot be undone.`)) return;
+  try {
+    const fd = new FormData();
+    fd.append('subject_id', SUB_ID);
+    fd.append('period', period);
+    const r = await fetch(`/grades/section/${SEC_ID}/clear`, {method:'POST', body:fd});
+    const d = await r.json();
+    if (d.ok) {
+      toast(`${period} grades cleared.`, 'success');
+      setTimeout(() => location.reload(), 800);
+    } else {
+      toast(d.error || 'Could not clear grades.', 'error');
+    }
+  } catch(e) { toast('Network error.', 'error'); }
+}
+
+async function handleAdminImport(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+  const fd = new FormData();
+  fd.append('csv_file', file);
+  toast('Importing grades…', 'success');
+  try {
+    const r = await fetch(`/grades/section/${SEC_ID}/import?subject_id=${SUB_ID}`, {method:'POST', body:fd});
+    const d = await r.json();
+    if (d.ok) {
+      let msg = `Imported: ${d.updated} grade(s) updated.`;
+      if (d.errors > 0) msg += ` ${d.errors} error(s).`;
+      toast(msg, d.errors > 0 ? 'error' : 'success');
+      if (d.error_msgs && d.error_msgs.length) alert('Import errors:\n' + d.error_msgs.join('\n'));
+      if (d.updated > 0) setTimeout(() => location.reload(), 1000);
+    } else {
+      toast(d.error || 'Import failed.', 'error');
+    }
+  } catch(e) { toast('Import failed.', 'error'); }
+}
+</script>
+{% endblock %}

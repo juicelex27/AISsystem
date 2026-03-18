@@ -52,48 +52,28 @@
       <div class="teacher-avatar-lg">
         {{ teacher.first_name[0]|upper }}{{ teacher.last_name[0]|upper }}
       </div>
-      <div style="flex:1;min-width:0;">
-        <div style="font-size:17px;font-weight:800;color:var(--text-primary);letter-spacing:-.3px;">
+      <div>
+        <div style="font-size:20px;font-weight:800;color:var(--text-primary);">
           {{ teacher.first_name }} {{ teacher.last_name }}
         </div>
-        <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">
-          {{ teacher.email }}&ensp;·&ensp;@{{ teacher.username }}
+        <div style="font-size:13px;color:var(--text-muted);margin-top:2px;">
+          {{ sections_count }} section(s) &nbsp;·&nbsp; {{ days_active }} day(s) active
         </div>
-      </div>
-      <!-- Inline totals — no extra card needed -->
-      <div style="display:flex;gap:24px;flex-shrink:0;">
-        {% set totals = [
-          (schedules|length,  'Classes'),
-          (days_active,       'Days Active'),
-          (sections_count,    'Sections')
-        ] %}
-        {% for val, lbl in totals %}
-        <div style="text-align:center;">
-          <div style="font-size:24px;font-weight:800;color:var(--text-primary);letter-spacing:-1px;line-height:1;">{{ val }}</div>
-          <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text-secondary);margin-top:4px;">{{ lbl }}</div>
-        </div>
-        {% endfor %}
       </div>
     </div>
   </div>
 </div>
 
-<!-- Per-semester stats -->
+<!-- Per-semester stat cards -->
 {% if semesters %}
-<div class="stats-grid">
-  {% for sem in semesters %}{% set st = sem_stats[sem] %}
-  <div class="stat-card" data-sem-card="{{ sem }}">
-    <div class="stat-icon {{ 'blue' if '1st' in sem else 'purple' }}">
-      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zm0 2.27L20 9l-8 4.36L4 9l8-3.73zM5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82z"/></svg>
-    </div>
-    <div>
-      <div class="stat-value">{{ st.sections }}</div>
-      <div class="stat-label">Sections · {{ '1st Sem' if '1st' in sem else '2nd Sem' }}</div>
-    </div>
-  </div>
-  <div class="stat-card" data-sem-card="{{ sem }}">
-    <div class="stat-icon {{ 'teal' if '1st' in sem else 'orange' }}">
-      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+<div style="display:flex;gap:16px;flex-wrap:wrap;">
+  {% for sem in semesters %}
+  {% set st = sem_stats[sem] %}
+  <div class="content-card" data-sem-card="{{ sem }}" style="flex:1;min-width:180px;padding:16px 20px;display:flex;align-items:center;gap:14px;">
+    <div style="width:40px;height:40px;border-radius:10px;background:{% if '1st' in sem %}#dbeafe{% else %}#f3e8ff{% endif %};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+      <svg viewBox="0 0 24 24" fill="{% if '1st' in sem %}#1e40af{% else %}#7e22ce{% endif %}" style="width:20px;height:20px;">
+        <path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/>
+      </svg>
     </div>
     <div>
       <div class="stat-value">{{ st.classes }}</div>
@@ -144,7 +124,7 @@
       </thead>
       <tbody>
         {% for sch in schedules %}
-        <tr class="sched-row" data-semester="{{ sch.semester or '' }}">
+        <tr class="sched-row" data-semester="{{ sch.semester or sch.subject_semester or '' }}">
           <td><span class="badge badge-grade">{{ sch.day }}</span></td>
           <td style="font-weight:600;font-size:13px;white-space:nowrap;">
             {{ sch.time_start }} – {{ sch.time_end }}
@@ -154,9 +134,12 @@
             <div style="font-size:11px;color:var(--text-muted);">{{ sch.subject_code }}</div>
           </td>
           <td>
-            {% if sch.semester %}
-            <span class="badge" style="background:{% if sch.semester=='1st Semester' %}#dbeafe;color:#1e40af{% else %}#f3e8ff;color:#7e22ce{% endif %};">
-              {{ '1st' if sch.semester=='1st Semester' else '2nd' }}
+            {% set _rsem = sch.semester or sch.subject_semester or '' %}
+            {% if _rsem %}
+            <span class="badge" style="background:{% if _rsem=='1st Semester' %}#dbeafe;color:#1e40af{% elif _rsem=='2nd Semester' %}#f3e8ff;color:#7e22ce{% else %}#fef9c3;color:#854d0e{% endif %};">
+              {% if _rsem == '1st Semester' %}1st
+              {% elif _rsem == '2nd Semester' %}2nd
+              {% else %}Both{% endif %}
             </span>
             {% else %}<span style="color:var(--text-muted);">—</span>{% endif %}
           </td>
@@ -199,7 +182,7 @@ const scheduleData = [
     section_id:   {{ sch.section_id }},
     subject_name: {{ sch.subject_name | tojson }},
     subject_code: {{ sch.subject_code | tojson }},
-    semester:     {{ (sch.semester or '') | tojson }},
+    semester:     {{ (sch.semester or sch.subject_semester or '') | tojson }},
     teacher_name: {{ ('Gr.' ~ sch.grade_level ~ ' – ' ~ sch.section_name) | tojson }},
     day:          {{ sch.day | tojson }},
     time_start:   {{ sch.time_start | tojson }},
@@ -214,11 +197,15 @@ function setSemester(sem, btn) {
   document.querySelectorAll('.sem-tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
 
-  const filtered = sem === 'all' ? scheduleData : scheduleData.filter(s => s.semester === sem);
+  // FIX: include Whole Year entries in each semester tab filter
+  const filtered = sem === 'all'
+    ? scheduleData
+    : scheduleData.filter(s => s.semester === sem || s.semester === 'Whole Year');
   renderTimetable(filtered, 'timetableContainer', null, 'section_id');
 
+  // FIX: show Whole Year rows in both semester tabs
   document.querySelectorAll('.sched-row').forEach(row => {
-    row.style.display = (sem === 'all' || row.dataset.semester === sem) ? '' : 'none';
+    row.style.display = (sem === 'all' || row.dataset.semester === sem || row.dataset.semester === 'Whole Year') ? '' : 'none';
   });
 
   document.querySelectorAll('[data-sem-card]').forEach(card => {

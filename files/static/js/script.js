@@ -129,6 +129,67 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
   const totalSlots = (END_HOUR - START_HOUR) * 2;
   const totalH     = totalSlots * SLOT_H;
 
+  // ── Collision detection: assign lane (sub-column) per entry per day ──
+  // For each day, sort entries by start time, then greedily assign lanes
+  // so overlapping entries sit side-by-side instead of stacking on top.
+  const toMin = t => {
+    const [h, m] = t.split(':').map(Number);
+    return (h - START_HOUR) * 60 + m;
+  };
+
+  // Build per-day entry list with computed minutes
+  const byDay = {};
+  DAYS.forEach(d => { byDay[d] = []; });
+  schedules.forEach(sch => {
+    if (!DAYS.includes(sch.day)) return;
+    const startMin = toMin(sch.time_start);
+    const endMin   = toMin(sch.time_end);
+    if (startMin < 0 || endMin <= startMin) return;
+    byDay[sch.day].push({ sch, startMin, endMin, lane: -1, totalLanes: 1 });
+  });
+
+  // For each day, find overlap groups and assign lanes within each group
+  DAYS.forEach(day => {
+    const entries = byDay[day];
+    if (!entries.length) return;
+
+    // Sort by start time
+    entries.sort((a, b) => a.startMin - b.startMin);
+
+    // Greedy lane assignment
+    const laneEnds = []; // laneEnds[i] = endMin of last entry in lane i
+    entries.forEach(entry => {
+      let assigned = -1;
+      for (let i = 0; i < laneEnds.length; i++) {
+        if (entry.startMin >= laneEnds[i]) {
+          assigned = i;
+          laneEnds[i] = entry.endMin;
+          break;
+        }
+      }
+      if (assigned === -1) {
+        assigned = laneEnds.length;
+        laneEnds.push(entry.endMin);
+      }
+      entry.lane = assigned;
+    });
+
+    // Find total lanes needed for each entry (max lane index in its overlap group + 1)
+    // Re-scan: for each entry, count how many lanes are active during its time span
+    entries.forEach(entry => {
+      let maxLane = entry.lane;
+      entries.forEach(other => {
+        if (other === entry) return;
+        // overlaps if they share any time
+        if (other.startMin < entry.endMin && other.endMin > entry.startMin) {
+          maxLane = Math.max(maxLane, other.lane);
+        }
+      });
+      entry.totalLanes = maxLane + 1;
+    });
+  });
+
+  // ── Build HTML ──
   let html = `
     <div class="timetable-wrapper">
       <div class="timetable-header-row">
@@ -159,59 +220,63 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
   const colorMap = {};
   let colorIdx = 0;
 
-  schedules.forEach(sch => {
-    const dayIdx = DAYS.indexOf(sch.day);
-    if (dayIdx === -1) return;
+  const label12 = t => {
+    const [hh, mm] = t.split(':').map(Number);
+    const suffix = hh < 12 ? 'AM' : 'PM';
+    const h12    = hh % 12 || 12;
+    return `${h12}:${String(mm).padStart(2,'0')} ${suffix}`;
+  };
 
-    const [sh, sm] = sch.time_start.split(':').map(Number);
-    const [eh, em] = sch.time_end.split(':').map(Number);
-    const startMin = (sh - START_HOUR) * 60 + sm;
-    const endMin   = (eh - START_HOUR) * 60 + em;
-    if (startMin < 0 || endMin <= startMin) return;
+  // Render events using lane-aware positioning
+  DAYS.forEach((day, dayIdx) => {
+    byDay[day].forEach(({ sch, startMin, endMin, lane, totalLanes }) => {
+      const topPx    = (startMin / 30) * SLOT_H;
+      const heightPx = Math.max(((endMin - startMin) / 30) * SLOT_H, SLOT_H);
 
-    const topPx    = (startMin / 30) * SLOT_H;
-    const heightPx = Math.max(((endMin - startMin) / 30) * SLOT_H, SLOT_H);
-    const colPercent = (dayIdx / COLS) * 100;
-    const colWidth   = (1 / COLS) * 100;
+      // Each day column is (1/COLS * 100)% wide; within it, split by lanes
+      const colPercent  = (dayIdx / COLS) * 100;
+      const colWidth    = (1 / COLS) * 100;
+      const laneWidth   = colWidth / totalLanes;
+      const laneOffset  = laneWidth * lane;
 
-    const colorKey = sch[colorBy] ?? sch.subject_id;
-    if (!colorMap[colorKey]) {
-      colorMap[colorKey] = COLORS[colorIdx % COLORS.length];
-      colorIdx++;
-    }
-    const color = colorMap[colorKey];
+      // Horizontal inset: 3px gap on outer edges, 2px between lanes
+      const isFirst = lane === 0;
+      const isLast  = lane === totalLanes - 1;
+      const leftGap  = isFirst ? 3 : 2;
+      const rightGap = isLast  ? 3 : 2;
 
-    const label12 = t => {
-      const [hh, mm] = t.split(':').map(Number);
-      const suffix = hh < 12 ? 'AM' : 'PM';
-      const h12    = hh % 12 || 12;
-      return `${h12}:${String(mm).padStart(2,'0')} ${suffix}`;
-    };
+      const colorKey = sch[colorBy] ?? sch.subject_id;
+      if (!colorMap[colorKey]) {
+        colorMap[colorKey] = COLORS[colorIdx % COLORS.length];
+        colorIdx++;
+      }
+      const color = colorMap[colorKey];
 
-    html += `
-      <div class="tt-event" style="
-        position:absolute;
-        top:${topPx + 2}px;
-        height:${heightPx - 4}px;
-        left:calc(${colPercent}% + 3px);
-        width:calc(${colWidth}% - 6px);
-        background:${color};
-        border-radius:6px;
-        padding:4px 7px;
-        overflow:hidden;
-        z-index:2;
-      " title="${sch.subject_name} • ${sch.teacher_name} • ${label12(sch.time_start)}–${label12(sch.time_end)}">
-        <div style="font-size:11px;font-weight:700;color:white;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${sch.subject_name}</div>
-        <div style="font-size:10px;color:rgba(255,255,255,.8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${sch.teacher_name}</div>
-        <div style="font-size:10px;color:rgba(255,255,255,.7);">${label12(sch.time_start)}–${label12(sch.time_end)}</div>
-        ${sch.room ? `<div style="font-size:10px;color:rgba(255,255,255,.6);">📍 ${sch.room}</div>` : ''}
-        ${deleteBase ? `
-        <form method="POST" action="${deleteBase}/${sch.id}" style="display:inline;" onsubmit="return confirm('Remove this schedule entry?')">
-          <button type="submit" style="position:absolute;top:3px;right:4px;width:16px;height:16px;border-radius:50%;background:rgba(0,0,0,.25);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;" title="Remove">
-            <svg viewBox="0 0 24 24" style="width:9px;height:9px;fill:white"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-          </button>
-        </form>` : ''}
-      </div>`;
+      html += `
+        <div class="tt-event" style="
+          position:absolute;
+          top:${topPx + 2}px;
+          height:${heightPx - 4}px;
+          left:calc(${colPercent + laneOffset}% + ${leftGap}px);
+          width:calc(${laneWidth}% - ${leftGap + rightGap}px);
+          background:${color};
+          border-radius:6px;
+          padding:4px 7px;
+          overflow:hidden;
+          z-index:2;
+        " title="${sch.subject_name} • ${sch.teacher_name} • ${label12(sch.time_start)}–${label12(sch.time_end)}">
+          <div style="font-size:11px;font-weight:700;color:white;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${sch.subject_name}</div>
+          <div style="font-size:10px;color:rgba(255,255,255,.8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${sch.teacher_name}</div>
+          <div style="font-size:10px;color:rgba(255,255,255,.7);">${label12(sch.time_start)}–${label12(sch.time_end)}</div>
+          ${sch.room ? `<div style="font-size:10px;color:rgba(255,255,255,.6);">📍 ${sch.room}</div>` : ''}
+          ${deleteBase ? `
+          <form method="POST" action="${deleteBase}/${sch.id}" style="display:inline;" onsubmit="return confirm('Remove this schedule entry?')">
+            <button type="submit" style="position:absolute;top:3px;right:4px;width:16px;height:16px;border-radius:50%;background:rgba(0,0,0,.25);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;" title="Remove">
+              <svg viewBox="0 0 24 24" style="width:9px;height:9px;fill:white"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+          </form>` : ''}
+        </div>`;
+    });
   });
 
   html += `</div></div></div>`;

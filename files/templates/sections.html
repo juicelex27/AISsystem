@@ -3,6 +3,32 @@
 {% block page_title %}Sections{% endblock %}
 {% block page_subtitle %}Manage class sections — click a card to view its schedule{% endblock %}
 {% block header_actions %}
+  {% set any_schedules = sections_data | selectattr('schedule_count') | list %}
+  {% if any_schedules %}
+  <div class="dropdown-wrap" id="clearDropdownWrap">
+    <button class="btn btn-danger" onclick="toggleClearDropdown(event)">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+      Clear Schedule
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;margin-left:2px;"><path d="M7 10l5 5 5-5z"/></svg>
+    </button>
+    <div class="dropdown-menu" id="clearDropdownMenu" style="display:none;">
+      {% for item in sections_data %}
+      {% if item.schedule_count > 0 %}
+      {% set entry_word = 'entry' if item.schedule_count == 1 else 'entries' %}
+      <form method="POST" action="{{ url_for('flush_schedule', sec_id=item.section.id) }}"
+            onsubmit="return confirm('Clear all {{ item.schedule_count }} schedule {{ entry_word }} for {{ item.section.section_name }}? This cannot be undone.')">
+        <button type="submit" class="dropdown-item">
+          <span>
+            <span style="font-weight:600;">Gr.{{ item.section.grade_level }} — {{ item.section.section_name }}</span>
+            <span style="font-size:11px;color:#9ca3af;display:block;">{{ item.schedule_count }} {{ entry_word }}</span>
+          </span>
+        </button>
+      </form>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
   <button class="btn btn-primary" onclick="openModal('addSectionModal')">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
     Add Section
@@ -71,6 +97,7 @@
         </form>
       </div>
       <div style="display:flex;gap:6px;">
+
         <a href="{{ url_for('section_student_list', sec_id=sec.id) }}" class="btn btn-secondary btn-sm">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
           Students
@@ -212,4 +239,41 @@
   </div>
 </div>
 
+
+
+
+{% endblock %}
+
+{% block extra_css %}
+<style>
+.dropdown-wrap { position: relative; display: inline-block; }
+.dropdown-menu {
+  position: absolute; right: 0; top: calc(100% + 6px);
+  background: #fff; border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.12);
+  min-width: 220px; z-index: 999; overflow: hidden;
+  padding: 4px 0;
+}
+.dropdown-item {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 9px 14px; background: none; border: none;
+  text-align: left; cursor: pointer; font-size: 13px;
+  color: var(--text-primary); transition: background .12s;
+}
+.dropdown-item:hover { background: #fef2f2; color: #b91c1c; }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function toggleClearDropdown(e) {
+  e.stopPropagation();
+  const menu = document.getElementById('clearDropdownMenu');
+  menu.style.display = menu.style.display === 'none' ? '' : 'none';
+}
+document.addEventListener('click', () => {
+  const menu = document.getElementById('clearDropdownMenu');
+  if (menu) menu.style.display = 'none';
+});
+</script>
 {% endblock %}

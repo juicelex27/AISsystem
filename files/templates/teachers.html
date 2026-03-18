@@ -11,6 +11,61 @@
   </button>
 {% endblock %}
 
+{% block extra_css %}
+<style>
+.load-bar-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 130px;
+}
+.load-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.load-bar-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  color: var(--text-muted);
+  width: 26px;
+  flex-shrink: 0;
+}
+.load-bar-track {
+  flex: 1;
+  height: 6px;
+  background: var(--bg-page);
+  border-radius: 99px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.load-bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  transition: width .3s;
+}
+.load-bar-fill.s1 { background: linear-gradient(90deg,#3b82f6,#6366f1); }
+.load-bar-fill.s2 { background: linear-gradient(90deg,#a855f7,#ec4899); }
+.load-bar-fill.full { background: linear-gradient(90deg,#ef4444,#f97316); }
+.load-bar-count {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  width: 32px;
+  flex-shrink: 0;
+  text-align: right;
+}
+.load-bar-count.warn { color: #dc2626; }
+.no-load {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+</style>
+{% endblock %}
+
 {% block content %}
 
 <div class="content-card">
@@ -27,11 +82,17 @@
           <th>Name</th>
           <th>Email</th>
           <th>Username</th>
+          <th>Section Load</th>
           <th style="text-align:right;">Actions</th>
         </tr>
       </thead>
       <tbody>
         {% for t in teachers %}
+        {% set load = workload_map.get(t.id, {}) %}
+        {% set s1 = load.get('1st Semester', 0) %}
+        {% set s2 = load.get('2nd Semester', 0) %}
+        {% set s1_pct = [(s1 / max_sections * 100), 100] | min %}
+        {% set s2_pct = [(s2 / max_sections * 100), 100] | min %}
         <tr>
           <td style="color:#9ca3af;font-size:12px;">{{ loop.index }}</td>
           <td>
@@ -46,6 +107,38 @@
           </td>
           <td style="color:#6b7280;">{{ t.email }}</td>
           <td><span class="badge badge-section">{{ t.username }}</span></td>
+          <td>
+            {% if s1 == 0 and s2 == 0 %}
+              <span class="no-load">No schedule yet</span>
+            {% else %}
+            <div class="load-bar-wrap">
+              {% if s1 > 0 %}
+              <div class="load-bar-row">
+                <span class="load-bar-label">1st</span>
+                <div class="load-bar-track">
+                  <div class="load-bar-fill {{ 'full' if s1 >= max_sections else 's1' }}"
+                       style="width:{{ s1_pct }}%;"></div>
+                </div>
+                <span class="load-bar-count {{ 'warn' if s1 >= max_sections else '' }}">
+                  {{ s1 }}/{{ max_sections }}
+                </span>
+              </div>
+              {% endif %}
+              {% if s2 > 0 %}
+              <div class="load-bar-row">
+                <span class="load-bar-label">2nd</span>
+                <div class="load-bar-track">
+                  <div class="load-bar-fill {{ 'full' if s2 >= max_sections else 's2' }}"
+                       style="width:{{ s2_pct }}%;"></div>
+                </div>
+                <span class="load-bar-count {{ 'warn' if s2 >= max_sections else '' }}">
+                  {{ s2 }}/{{ max_sections }}
+                </span>
+              </div>
+              {% endif %}
+            </div>
+            {% endif %}
+          </td>
           <td style="text-align:right;">
             <div style="display:flex;gap:8px;justify-content:flex-end;">
               <a href="{{ url_for('teacher_schedule', tid=t.id) }}" class="btn btn-secondary btn-sm">
@@ -57,7 +150,7 @@
                 Edit
               </button>
               <form id="del-teacher-{{ t.id }}" method="POST" action="{{ url_for('delete_teacher', tid=t.id) }}" style="display:inline;">
-                <button type="button" class="btn btn-danger btn-sm" onclick="confirmDelete('del-teacher-{{ t.id }}')">
+                <button type="button" class="btn btn-danger btn-sm" onclick="confirmDelete('del-teacher-{{ t.id }}', '{{ t.first_name }} {{ t.last_name }}')">
                   <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
                   Delete
                 </button>
@@ -70,46 +163,44 @@
     </table>
   </div>
   {% else %}
-  <div class="empty-state">
-    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
-    <h3>No teachers found</h3>
-    <p>Click "Add Teacher" to get started</p>
+  <div style="padding:48px 24px;text-align:center;color:var(--text-muted);">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:40px;height:40px;opacity:.3;margin-bottom:12px;"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+    <div style="font-size:15px;font-weight:600;">No teachers yet</div>
+    <div style="font-size:13px;margin-top:4px;">Click "Add Teacher" to get started.</div>
   </div>
   {% endif %}
 </div>
 
-<!-- ── ADD TEACHER MODAL ── -->
+<!-- ADD TEACHER MODAL -->
 <div class="modal-overlay" id="addTeacherModal">
-  <div class="modal">
+  <div class="modal" style="max-width:480px;">
     <div class="modal-header">
-      <h3>Add New Teacher</h3>
+      <h3>Add Teacher</h3>
       <button class="modal-close" onclick="closeModal('addTeacherModal')">×</button>
     </div>
     <form method="POST" action="{{ url_for('add_teacher') }}">
       <div class="modal-body">
         <div class="form-row">
           <div class="form-group">
-            <label>First Name</label>
-            <input type="text" name="first_name" class="form-control" placeholder="e.g. Maria" required>
+            <label class="form-label">First Name</label>
+            <input type="text" name="first_name" class="form-control" required>
           </div>
           <div class="form-group">
-            <label>Last Name</label>
-            <input type="text" name="last_name" class="form-control" placeholder="e.g. Santos" required>
+            <label class="form-label">Last Name</label>
+            <input type="text" name="last_name" class="form-control" required>
           </div>
         </div>
         <div class="form-group">
-          <label>Email Address</label>
-          <input type="email" name="email" class="form-control" placeholder="teacher@school.edu.ph" required>
+          <label class="form-label">Email</label>
+          <input type="email" name="email" class="form-control" required>
         </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>Username</label>
-            <input type="text" name="username" class="form-control" placeholder="m.santos" required>
-          </div>
-          <div class="form-group">
-            <label>Password</label>
-            <input type="password" name="password" class="form-control" placeholder="Set password" required>
-          </div>
+        <div class="form-group">
+          <label class="form-label">Username</label>
+          <input type="text" name="username" class="form-control" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Password</label>
+          <input type="password" name="password" class="form-control" required>
         </div>
       </div>
       <div class="modal-footer">
@@ -120,39 +211,36 @@
   </div>
 </div>
 
-<!-- ── EDIT TEACHER MODAL ── -->
+<!-- EDIT TEACHER MODAL -->
 <div class="modal-overlay" id="editTeacherModal">
-  <div class="modal">
+  <div class="modal" style="max-width:480px;">
     <div class="modal-header">
       <h3>Edit Teacher</h3>
       <button class="modal-close" onclick="closeModal('editTeacherModal')">×</button>
     </div>
-    <form id="edit_teacher_form" method="POST" action="">
-      <input type="hidden" id="edit_teacher_id" name="teacher_id">
+    <form method="POST" id="editTeacherForm" action="">
       <div class="modal-body">
         <div class="form-row">
           <div class="form-group">
-            <label>First Name</label>
-            <input type="text" id="edit_first_name" name="first_name" class="form-control" required>
+            <label class="form-label">First Name</label>
+            <input type="text" name="first_name" id="edit_first_name" class="form-control" required>
           </div>
           <div class="form-group">
-            <label>Last Name</label>
-            <input type="text" id="edit_last_name" name="last_name" class="form-control" required>
+            <label class="form-label">Last Name</label>
+            <input type="text" name="last_name" id="edit_last_name" class="form-control" required>
           </div>
         </div>
         <div class="form-group">
-          <label>Email Address</label>
-          <input type="email" id="edit_email" name="email" class="form-control" required>
+          <label class="form-label">Email</label>
+          <input type="email" name="email" id="edit_email" class="form-control" required>
         </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>Username</label>
-            <input type="text" id="edit_username" name="username" class="form-control" required>
-          </div>
-          <div class="form-group">
-            <label>New Password <span style="color:#9ca3af;font-weight:400;">(leave blank to keep)</span></label>
-            <input type="password" name="password" class="form-control" placeholder="New password">
-          </div>
+        <div class="form-group">
+          <label class="form-label">Username</label>
+          <input type="text" name="username" id="edit_username" class="form-control" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">New Password <span style="color:var(--text-muted);font-weight:400;">(leave blank to keep current)</span></label>
+          <input type="password" name="password" id="edit_password" class="form-control">
         </div>
       </div>
       <div class="modal-footer">
@@ -163,4 +251,26 @@
   </div>
 </div>
 
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const TEACHERS_DATA = {
+  {% for t in teachers %}
+  {{ t.id }}: { first_name: {{ t.first_name|tojson }}, last_name: {{ t.last_name|tojson }}, email: {{ t.email|tojson }}, username: {{ t.username|tojson }} },
+  {% endfor %}
+};
+
+function editTeacher(id) {
+  const t = TEACHERS_DATA[id];
+  if (!t) return;
+  document.getElementById('edit_first_name').value = t.first_name;
+  document.getElementById('edit_last_name').value  = t.last_name;
+  document.getElementById('edit_email').value      = t.email;
+  document.getElementById('edit_username').value   = t.username;
+  document.getElementById('edit_password').value   = '';
+  document.getElementById('editTeacherForm').action = `/teachers/edit/${id}`;
+  openModal('editTeacherModal');
+}
+</script>
 {% endblock %}

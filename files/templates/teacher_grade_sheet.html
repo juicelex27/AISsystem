@@ -1,0 +1,286 @@
+{% extends "portal_layout.html" %}
+{% block title %}Grade Sheet — {{ subject.subject_name }}{% endblock %}
+{% block page_title %}Grade Encoding{% endblock %}
+{% block page_subtitle %}{{ subject.subject_name }} · {{ section.section_name }} · Grade {{ section.grade_level }}{% endblock %}
+
+{% block header_actions %}
+  <a href="{{ url_for('teacher_dashboard') }}" class="btn btn-secondary">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+    Back
+  </a>
+  <form method="GET" action="{{ url_for('teacher_export_grades', sec_id=sec_id, sub_id=sub_id) }}" style="display:flex;align-items:center;gap:6px;">
+    <select name="period" class="form-control" style="width:140px;padding:6px 10px;font-size:13px;">
+      <option value="all">All Periods</option>
+      <option value="Prelim">Prelim</option>
+      <option value="Midterm">Midterm</option>
+      <option value="Semi-Final">Semi-Final</option>
+      <option value="Final">Final</option>
+    </select>
+    <button type="submit" class="btn btn-secondary">
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+      Export CSV
+    </button>
+  </form>
+  <button class="btn btn-secondary" onclick="document.getElementById('csvImportInput').click()">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
+    Import CSV
+  </button>
+  <input type="file" id="csvImportInput" accept=".csv" style="display:none" onchange="handleImport(this)">
+{% endblock %}
+
+{% block extra_css %}
+<style>
+.grade-table { width:100%; border-collapse:collapse; font-size:13px; }
+.grade-table th { padding:10px 8px; text-align:center; font-size:11px; font-weight:700;
+  text-transform:uppercase; letter-spacing:.4px; color:var(--text-muted);
+  border-bottom:2px solid var(--border); white-space:nowrap; }
+.grade-table th.col-name { text-align:left; }
+.grade-table td { padding:7px 8px; border-bottom:1px solid var(--border); vertical-align:middle; }
+.grade-table tbody tr:hover { background:#f9fafb; }
+.grade-table tbody tr:last-child td { border-bottom:none; }
+
+.grade-input {
+  width:58px; padding:4px 6px; border:1.5px solid var(--border); border-radius:6px;
+  font-size:12px; text-align:center; font-family:'Inter',sans-serif; transition:border-color .15s;
+}
+.grade-input:focus { outline:none; border-color:rgba(160,24,80,.5); box-shadow:0 0 0 3px rgba(160,24,80,.1); }
+.grade-input.saved { border-color:#22c55e; background:#f0fdf4; }
+.grade-input.error { border-color:#ef4444; background:#fef2f2; }
+.grade-input:disabled { background:#f3f4f6; color:#9ca3af; cursor:not-allowed; border-color:#e5e7eb; }
+
+.p-group { border-left:2px solid var(--border); }
+.p-header { background:#f8fafc; font-size:11px; font-weight:800; text-align:center; padding:8px 4px !important; }
+.p-prelim    { color:#2563eb; } .p-midterm   { color:#7c3aed; }
+.p-semifinal { color:#d97706; } .p-final     { color:#16a34a; }
+
+.status-pill { display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:99px;font-size:10px;font-weight:700; }
+.status-Draft     { background:#f1f5f9;color:#64748b;border:1px solid #cbd5e1; }
+.status-Submitted { background:#dbeafe;color:#1e40af;border:1px solid #bfdbfe; }
+.status-Approved  { background:#dcfce7;color:#166534;border:1px solid #86efac; }
+.status-Locked    { background:#fef3c7;color:#92400e;border:1px solid #fcd34d; }
+
+.q-actions { display:flex;gap:4px;justify-content:center;margin-top:5px; }
+.q-action-btn { padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;border:none;cursor:pointer;transition:all .15s; }
+.btn-submit { background:#3b82f6;color:#fff; } .btn-submit:hover { background:#2563eb; }
+
+.computed-grade { font-weight:700;font-size:13px;text-align:center;min-width:44px;display:inline-block; }
+.grade-pass { color:#16a34a; } .grade-fail { color:#dc2626; } .grade-none { color:#9ca3af; }
+
+.legend { display:flex;gap:16px;font-size:11px;color:var(--text-muted);flex-wrap:wrap; }
+.legend-item { display:flex;align-items:center;gap:4px; }
+.legend-dot { width:8px;height:8px;border-radius:50%; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="content-card">
+  <div style="padding:14px 20px;border-bottom:1px solid var(--border);">
+    <div class="legend">
+      <span class="legend-item"><span class="legend-dot" style="background:#3b82f6;"></span> WW = Written Works (30%)</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#8b5cf6;"></span> PT = Performance Tasks (50%)</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#f59e0b;"></span> QA = Quarterly Assessment (20%)</span>
+      <span style="margin-left:auto;font-weight:600;">Passing: {{ passing_grade }}</span>
+    </div>
+  </div>
+
+  <div style="overflow-x:auto;">
+    <table class="grade-table">
+      <thead>
+        <tr>
+          <th class="col-name" rowspan="2" style="min-width:160px;text-align:left;padding-left:16px;">Student</th>
+          {% set period_classes = {'Prelim':'p-prelim','Midterm':'p-midterm','Semi-Final':'p-semifinal','Final':'p-final'} %}
+          {% for q in quarters %}{% if q in open_periods %}
+          <th class="p-header {{ period_classes[q] }} p-group" colspan="4">
+            <div style="display:flex;align-items:center;justify-content:center;gap:6px;">
+              {{ q }}
+              {% set qs = q_statuses.get(q, 'Draft') %}
+              <span class="status-pill status-{{ qs }}" id="status_{{ q }}">
+                {{ '✏️' if qs=='Draft' else ('📤' if qs=='Submitted' else ('✅' if qs=='Approved' else '🔒')) }} {{ qs }}
+              </span>
+            </div>
+            <div class="q-actions" id="qactions_{{ q }}">
+              {% if qs == 'Draft' %}
+              <button class="q-action-btn btn-submit" onclick="submitQuarter('{{ q }}')">Submit for Review</button>
+              {% elif qs == 'Submitted' %}
+              <span style="font-size:10px;color:#1e40af;font-style:italic;">Awaiting admin approval</span>
+              {% elif qs == 'Approved' %}
+              <span style="font-size:10px;color:#166534;font-style:italic;">Approved by admin</span>
+              {% elif qs == 'Locked' %}
+              <span style="font-size:10px;color:#92400e;font-style:italic;">Locked</span>
+              {% endif %}
+            </div>
+          </th>
+          {% endif %}{% endfor %}
+          <th rowspan="2" style="min-width:56px;">Avg</th>
+        </tr>
+        <tr>
+          {% for q in quarters %}{% if q in open_periods %}
+          <th class="p-group" style="color:#2563eb;">WW</th>
+          <th style="color:#8b5cf6;">PT</th>
+          <th style="color:#f59e0b;">QA</th>
+          <th>Grade</th>
+          {% endif %}{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for sg in students %}{% set st = sg.student %}
+        <tr>
+          <td style="padding-left:16px;">
+            <div style="font-weight:600;font-size:13px;">{{ st.last_name }}, {{ st.first_name }}{% if st.middle_name %} {{ st.middle_name[0] }}.{% endif %}</div>
+            <div style="font-size:11px;color:var(--text-muted);">{{ st.student_id }}</div>
+          </td>
+          {% for q in quarters %}{% if q in open_periods %}{% set qd = sg.quarters[q] %}{% set qs = q_statuses.get(q,'Draft') %}
+          <td class="p-group">
+            <input type="number" min="0" max="100" step="0.01" class="grade-input"
+              data-student="{{ st.id }}" data-subject="{{ sub_id }}" data-section="{{ sec_id }}"
+              data-quarter="{{ q }}" data-component="written_works"
+              value="{{ qd.ww if qd.ww is not none else '' }}"
+              {{ 'disabled' if qs in ('Submitted','Approved','Locked') else '' }}>
+          </td>
+          <td>
+            <input type="number" min="0" max="100" step="0.01" class="grade-input"
+              data-student="{{ st.id }}" data-subject="{{ sub_id }}" data-section="{{ sec_id }}"
+              data-quarter="{{ q }}" data-component="performance_tasks"
+              value="{{ qd.pt if qd.pt is not none else '' }}"
+              {{ 'disabled' if qs in ('Submitted','Approved','Locked') else '' }}>
+          </td>
+          <td>
+            <input type="number" min="0" max="100" step="0.01" class="grade-input"
+              data-student="{{ st.id }}" data-subject="{{ sub_id }}" data-section="{{ sec_id }}"
+              data-quarter="{{ q }}" data-component="quarterly_assessment"
+              value="{{ qd.qa if qd.qa is not none else '' }}"
+              {{ 'disabled' if qs in ('Submitted','Approved','Locked') else '' }}>
+          </td>
+          <td>
+            <span class="computed-grade {{ 'grade-pass' if qd.computed is not none and qd.computed >= passing_grade else ('grade-fail' if qd.computed is not none else 'grade-none') }}"
+                  id="computed_{{ st.id }}_{{ q }}">
+              {{ '%.2f'|format(qd.computed) if qd.computed is not none else '—' }}
+            </span>
+          </td>
+          {% endif %}{% endfor %}
+          <td style="font-weight:800;font-size:13px;text-align:center;">
+            <span id="avg_{{ st.id }}" class="{{ 'grade-pass' if sg.average is not none and sg.average >= passing_grade else ('grade-fail' if sg.average is not none else 'grade-none') }}">
+              {{ '%.2f'|format(sg.average) if sg.average is not none else '—' }}
+            </span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const SAVE_URL   = '/grades/save_cell';
+const SUBMIT_URL = '/teacher/submit_quarter';
+const SUB_ID  = {{ sub_id }};
+const SEC_ID  = {{ sec_id }};
+const PASSING = {{ passing_grade }};
+const QUARTERS = {{ open_periods | tojson }};
+
+let saveTimers = {};
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.grade-input').forEach(el => {
+    el.addEventListener('change', () => queueSave(el));
+    el.addEventListener('blur',   () => queueSave(el));
+  });
+});
+
+function queueSave(el) {
+  const k = `${el.dataset.student}_${el.dataset.quarter}_${el.dataset.component}`;
+  clearTimeout(saveTimers[k]);
+  saveTimers[k] = setTimeout(() => doSave(el), 400);
+}
+
+async function doSave(el) {
+  const val = el.value.trim();
+  const v   = val === '' ? null : parseFloat(val);
+  if (val !== '' && (isNaN(v) || v < 0 || v > 100)) { el.classList.add('error'); return; }
+  el.classList.remove('error','saved');
+  try {
+    const r = await fetch(SAVE_URL, {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        student_id: parseInt(el.dataset.student), subject_id: parseInt(el.dataset.subject),
+        section_id: parseInt(el.dataset.section), quarter: el.dataset.quarter,
+        component: el.dataset.component, value: v, reason: 'Teacher grade entry'
+      })});
+    const d = await r.json();
+    if (d.ok) {
+      el.classList.add('saved'); setTimeout(()=>el.classList.remove('saved'),1500);
+      const cEl = document.getElementById(`computed_${el.dataset.student}_${el.dataset.quarter}`);
+      if (cEl) {
+        if (d.computed !== null) {
+          cEl.textContent = d.computed.toFixed(2);
+          cEl.className   = 'computed-grade ' + (d.passing ? 'grade-pass' : 'grade-fail');
+        } else {
+          cEl.textContent = '—';
+          cEl.className   = 'computed-grade grade-none';
+        }
+      }
+      recalcAvg(parseInt(el.dataset.student));
+    } else {
+      el.classList.add('error');
+      toast(d.error || 'Save failed.', 'error');
+    }
+  } catch(e) { el.classList.add('error'); }
+}
+
+function recalcAvg(sid) {
+  let sum=0, cnt=0;
+  QUARTERS.forEach(q => {
+    const el = document.getElementById(`computed_${sid}_${q}`);
+    if (el && el.textContent !== '—') { sum += parseFloat(el.textContent); cnt++; }
+  });
+  const el = document.getElementById(`avg_${sid}`);
+  if (!el) return;
+  if (cnt > 0) { const a=sum/cnt; el.textContent=a.toFixed(2); el.className=a>=PASSING?'grade-pass':'grade-fail'; }
+  else { el.textContent='—'; el.className='grade-none'; }
+}
+
+async function submitQuarter(quarter) {
+  if (!confirm(`Submit ${quarter} grades for review? You will not be able to edit until admin approves or returns.`)) return;
+  try {
+    const r = await fetch(SUBMIT_URL, {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({subject_id:SUB_ID, section_id:SEC_ID, quarter})});
+    const d = await r.json();
+    if (d.ok) {
+      const pill = document.getElementById(`status_${quarter}`);
+      if (pill) { pill.className='status-pill status-Submitted'; pill.textContent='📤 Submitted'; }
+      const acts = document.getElementById(`qactions_${quarter}`);
+      if (acts) acts.innerHTML='<span style="font-size:10px;color:#1e40af;font-style:italic;">Awaiting admin approval</span>';
+      document.querySelectorAll(`.grade-input[data-quarter="${quarter}"]`).forEach(el => el.disabled=true);
+      toast(`${quarter} submitted for review.`, 'success');
+    } else { toast(d.error||'Submit failed.','error'); }
+  } catch(e) { toast('Network error.','error'); }
+}
+
+async function handleImport(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+  const fd = new FormData();
+  fd.append('csv_file', file);
+  toast('Importing grades…', 'success');
+  try {
+    const r = await fetch(`/teacher/grade_sheet/${SEC_ID}/${SUB_ID}/import`, {method:'POST', body:fd});
+    const d = await r.json();
+    if (d.ok) {
+      let msg = `Imported: ${d.updated} grade(s) updated.`;
+      if (d.errors > 0) msg += ` ${d.errors} error(s).`;
+      toast(msg, d.errors > 0 ? 'error' : 'success');
+      if (d.error_msgs && d.error_msgs.length) alert('Import errors:\n' + d.error_msgs.join('\n'));
+      if (d.updated > 0) setTimeout(() => location.reload(), 1000);
+    } else { toast(d.error || 'Import failed.', 'error'); }
+  } catch(e) { toast('Import failed.', 'error'); }
+}
+
+function toast(msg, type) {
+  const t = document.createElement('div');
+  t.style.cssText=`position:fixed;bottom:24px;right:24px;z-index:9999;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;box-shadow:0 4px 20px rgba(0,0,0,.15);background:${type==='success'?'#22c55e':'#ef4444'};color:#fff;animation:slideUp .2s ease;`;
+  t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),3500);
+}
+</script>
+{% endblock %}

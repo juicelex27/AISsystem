@@ -1,0 +1,133 @@
+{% extends "portal_layout.html" %}
+{% block title %}My Subjects{% endblock %}
+{% block page_title %}My Subjects{% endblock %}
+{% block page_subtitle %}All subjects assigned to you{% endblock %}
+
+{% block extra_css %}
+<style>
+.sem-tabs { display:flex; gap:0; border-bottom:2px solid var(--border); margin-bottom:24px; }
+.sem-tab-btn {
+  padding:12px 28px; font-size:12px; font-weight:800; cursor:pointer;
+  border:none; background:none; color:var(--text-muted);
+  letter-spacing:.6px; text-transform:uppercase;
+  border-bottom:3px solid transparent; margin-bottom:-2px;
+  transition:all .15s; white-space:nowrap;
+}
+.sem-tab-btn.active { color:rgba(160,24,80,1); border-bottom-color:rgba(160,24,80,1); }
+.sem-tab-btn:hover:not(.active) { color:var(--text-primary); background:#f9fafb; }
+
+.subjects-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:20px; }
+.sem-panel { display:none; }
+.sem-panel.active { display:grid; }
+.empty-sem { grid-column:1/-1; text-align:center; padding:48px 0; color:var(--text-muted); font-size:13px; }
+
+.subject-card {
+  border-radius:14px; overflow:hidden; box-shadow:var(--shadow-md);
+  transition:transform .15s, box-shadow .15s; text-decoration:none; display:block;
+}
+.subject-card:hover { transform:translateY(-3px); box-shadow:var(--shadow-lg); }
+.card-top { padding:22px 18px 52px; position:relative; min-height:120px; }
+.card-badge { font-size:9px; font-weight:800; text-transform:uppercase;
+  letter-spacing:.8px; color:rgba(255,255,255,.65); margin-bottom:6px; }
+.card-code  { font-size:22px; font-weight:900; color:#fff; letter-spacing:-.5px; line-height:1.15; }
+.card-avatar {
+  position:absolute; bottom:-20px; right:16px;
+  width:44px; height:44px; border-radius:50%;
+  background:rgba(255,255,255,.2); border:3px solid rgba(255,255,255,.4);
+  display:flex; align-items:center; justify-content:center;
+  font-size:14px; font-weight:800; color:#fff; letter-spacing:-.5px;
+}
+.card-bottom { background:#fff; padding:28px 16px 14px; }
+.card-desc-lbl { font-size:9px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.6px; color:var(--text-muted); margin-bottom:3px; }
+.card-desc-val { font-size:13px; font-weight:600; color:var(--text-primary);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.card-meta { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+.card-meta-item { font-size:11px; color:var(--text-muted); }
+.wy-badge { font-size:10px; font-weight:700; color:#b45309; }
+
+.stats-bar { display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; }
+.stat-chip { padding:5px 14px; border-radius:99px; font-size:12px; font-weight:600;
+  background:#f1f5f9; color:#374151; border:1px solid #e2e8f0; }
+</style>
+{% endblock %}
+
+{% block content %}
+{% if not cards %}
+<div class="content-card">
+  <div class="empty-state">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+    <h3>No subjects assigned</h3>
+    <p>Your subjects will appear here once the admin assigns you to a schedule.</p>
+  </div>
+</div>
+{% else %}
+
+{% set sem1 = cards | selectattr("semester","equalto","1st Semester") | list %}
+{% set sem2 = cards | selectattr("semester","equalto","2nd Semester") | list %}
+{% set wy   = cards | selectattr("semester","equalto","Whole Year")   | list %}
+{% set na   = cards | rejectattr("semester","in",["1st Semester","2nd Semester","Whole Year"]) | list %}
+
+<div class="stats-bar">
+  <span class="stat-chip">📚 {{ cards|length }} Subject{{ 's' if cards|length != 1 else '' }}</span>
+  {% if sem1 %}<span class="stat-chip">1st Semester: {{ sem1|length }}</span>{% endif %}
+  {% if sem2 %}<span class="stat-chip">2nd Semester: {{ sem2|length }}</span>{% endif %}
+  {% if wy   %}<span class="stat-chip">Whole Year: {{ wy|length }}</span>{% endif %}
+</div>
+
+<div class="sem-tabs">
+  <button class="sem-tab-btn active" data-sem="1st" onclick="switchSem('1st',this)">First Semester</button>
+  <button class="sem-tab-btn"        data-sem="2nd" onclick="switchSem('2nd',this)">Second Semester</button>
+  <button class="sem-tab-btn"        data-sem="wy"  onclick="switchSem('wy',this)">Whole Year</button>
+</div>
+
+{% macro render_card(c) %}
+<a href="{{ url_for('teacher_subject_detail', sub_id=c.subject_id, sec_id=c.section_id) }}" class="subject-card">
+  <div class="card-top" style="background:{{ c.color }};">
+    <div class="card-badge">Course No.</div>
+    <div class="card-code">{{ c.subject_code }}</div>
+    <div class="card-avatar">{{ c.initials }}</div>
+  </div>
+  <div class="card-bottom">
+    <div class="card-desc-lbl">Description</div>
+    <div class="card-desc-val">{{ c.subject_name }}</div>
+    <div class="card-meta">
+      <span class="card-meta-item">📚 {{ c.section_name }}</span>
+      <span class="card-meta-item">👥 {{ c.student_count }}</span>
+      {% if c.semester == 'Whole Year' %}<span class="wy-badge">Whole Year</span>{% endif %}
+    </div>
+  </div>
+</a>
+{% endmacro %}
+
+<div class="sem-panel subjects-grid active" id="panel_1st">
+  {% set p1 = sem1 + wy + na %}
+  {% if p1 %}{% for c in p1 %}{{ render_card(c) }}{% endfor %}
+  {% else %}<div class="empty-sem">No subjects for 1st Semester</div>{% endif %}
+</div>
+
+<div class="sem-panel subjects-grid" id="panel_2nd">
+  {% set p2 = sem2 + wy + na %}
+  {% if p2 %}{% for c in p2 %}{{ render_card(c) }}{% endfor %}
+  {% else %}<div class="empty-sem">No subjects for 2nd Semester</div>{% endif %}
+</div>
+
+<div class="sem-panel subjects-grid" id="panel_wy">
+  {% set pwy = wy + na %}
+  {% if pwy %}{% for c in pwy %}{{ render_card(c) }}{% endfor %}
+  {% else %}<div class="empty-sem">No whole year subjects</div>{% endif %}
+</div>
+
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function switchSem(sem, btn) {
+  document.querySelectorAll('.sem-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.sem-tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('panel_' + sem).classList.add('active');
+  btn.classList.add('active');
+}
+</script>
+{% endblock %}
