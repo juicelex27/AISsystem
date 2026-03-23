@@ -59,8 +59,11 @@ function editSubject(id) {
 // ── EDIT SECTION ──────────────────────────────────────────────
 function editSection(id) {
   fetch(`/sections/get/${id}`).then(r => r.json()).then(data => {
+    // Normalize grade_level: "11" -> "Grade 11", "Grade 11" -> "Grade 11"
+    const gl = data.grade_level || '';
+    const normalGrade = gl.startsWith('Grade ') ? gl : (gl ? 'Grade ' + gl : '');
     document.getElementById('edit_section_id').value      = data.id;
-    document.getElementById('edit_grade_level_sec').value = data.grade_level;
+    document.getElementById('edit_grade_level_sec').value = normalGrade;
     document.getElementById('edit_section_name').value    = data.section_name;
     document.getElementById('edit_strand_id').value       = data.strand_id || '';
     document.getElementById('edit_adviser_id').value      = data.adviser_id || '';

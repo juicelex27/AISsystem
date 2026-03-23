@@ -1,0 +1,204 @@
+{% extends "layout.html" %}
+{% block title %}Grade Summary — {{ section.section_name }}{% endblock %}
+{% block page_title %}Grade Summary{% endblock %}
+{% block page_subtitle %}Grade {{ section.grade_level }} · {{ section.section_name }}{% if section.strand_code %} · {{ section.strand_code }}{% endif %}{% endblock %}
+
+{% block header_actions %}
+  <a href="{{ url_for('grade_sheet', sec_id=section.id, sem=active_sem) }}" class="btn btn-secondary">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10h-4v4h-2v-4H7v-2h4V7h2v4h4v2z"/></svg>
+    Grade Sheet
+  </a>
+  <button class="btn btn-secondary" onclick="window.print()">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/></svg>
+    Print
+  </button>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+@media print {
+  .sidebar, .top-header, .header-actions, .print-hide { display:none !important; }
+  .main-content { margin-left:0 !important; }
+  .page-body { padding:8px !important; }
+  .summary-table th, .summary-table td { font-size:8px !important; padding:3px 5px !important; }
+  .stat-row { display:none !important; }
+  body { background:white !important; }
+  .content-card { box-shadow:none !important; border:none !important; }
+}
+
+/* Semester tabs */
+.sem-tab-bar { display:flex; gap:8px; margin-bottom:20px; }
+.sem-tab {
+  padding:8px 22px; border-radius:99px; font-size:12px; font-weight:700;
+  border:1.5px solid var(--border); background:#fff; color:var(--text-secondary);
+  text-decoration:none; transition:all .15s;
+}
+.sem-tab.active { background:var(--brand-gradient); border-color:transparent; color:#fff; box-shadow:0 2px 8px rgba(160,24,80,.2); }
+.sem-tab:hover:not(.active) { border-color:rgba(160,24,80,.4); color:rgba(160,24,80,1); }
+
+/* Stat chips */
+.stat-row { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+.stat-chip-box {
+  background:#fff; border:1px solid var(--border); border-radius:var(--radius-md);
+  padding:14px 20px; min-width:100px;
+}
+.stat-chip-box .val { font-size:26px; font-weight:900; line-height:1; }
+.stat-chip-box .lbl { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-muted); margin-top:4px; }
+
+/* Table */
+.summary-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+.summary-table { width:100%; border-collapse:collapse; font-size:13px; white-space:nowrap; }
+
+.summary-table th {
+  padding:8px 10px; font-size:10px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.4px; color:var(--text-muted); background:var(--bg-page);
+  border-bottom:2px solid var(--border); border-right:1px solid var(--border);
+  text-align:center; position:sticky; top:0; z-index:2;
+}
+.summary-table th.th-name {
+  text-align:left; min-width:180px; position:sticky; left:0; z-index:3; background:var(--bg-page);
+  border-right:2px solid var(--border);
+}
+.summary-table th.th-divider { border-left:2px solid var(--border); }
+
+.summary-table td {
+  padding:8px 10px; border-bottom:1px solid var(--border);
+  border-right:1px solid #f3f4f6; text-align:center; vertical-align:middle;
+}
+.summary-table td.td-name {
+  text-align:left; position:sticky; left:0; background:#fff; z-index:1;
+  border-right:2px solid var(--border); font-weight:600;
+}
+.summary-table tbody tr:hover td { background:#f9fafb; }
+.summary-table tbody tr:hover td.td-name { background:#f3f4f6; }
+
+.th-sub { font-size:11px; color:var(--text-muted); font-weight:500; margin-top:2px; text-transform:none; letter-spacing:0; }
+
+/* Grade values */
+.gv { font-weight:700; }
+.gv-pass { color:#16a34a; }
+.gv-fail { color:#dc2626; }
+.gv-none { color:#d1d5db; font-weight:400; font-size:12px; }
+.td-gen { font-size:14px; font-weight:800; border-left:2px solid var(--border) !important; }
+.td-pf  { font-size:11px; font-weight:800; border-right:none !important; }
+.td-pass { background:#f0fdf4 !important; color:#166534; }
+.td-fail { background:#fef2f2 !important; color:#b91c1c; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- Semester tabs -->
+<div class="sem-tab-bar print-hide">
+  <a href="{{ url_for('grade_summary', sec_id=section.id, sem='1st Semester') }}"
+     class="sem-tab {{ 'active' if active_sem == '1st Semester' else '' }}">
+    1st Semester
+  </a>
+  <a href="{{ url_for('grade_summary', sec_id=section.id, sem='2nd Semester') }}"
+     class="sem-tab {{ 'active' if active_sem == '2nd Semester' else '' }}">
+    2nd Semester
+  </a>
+</div>
+
+<!-- Stats -->
+{% set passing_rows   = rows | selectattr('passing') | list %}
+{% set graded_rows    = rows | selectattr('gen_avg') | list %}
+{% set failing_rows   = graded_rows | rejectattr('passing') | list %}
+{% set avg_list       = graded_rows | map(attribute='gen_avg') | list %}
+{% set class_avg      = (avg_list | sum / avg_list | length) | round(2) if avg_list else none %}
+
+<div class="stat-row print-hide">
+  <div class="stat-chip-box">
+    <div class="val">{{ rows | length }}</div>
+    <div class="lbl">Students</div>
+  </div>
+  <div class="stat-chip-box">
+    <div class="val">{{ subjects | length }}</div>
+    <div class="lbl">Subjects</div>
+  </div>
+  <div class="stat-chip-box">
+    <div class="val" style="color:#16a34a;">{{ passing_rows | length }}</div>
+    <div class="lbl">Passing</div>
+  </div>
+  <div class="stat-chip-box">
+    <div class="val" style="color:#dc2626;">{{ failing_rows | length }}</div>
+    <div class="lbl">Failing</div>
+  </div>
+  {% if class_avg %}
+  <div class="stat-chip-box">
+    <div class="val {{ 'gv-pass' if class_avg >= passing_grade else 'gv-fail' }}">{{ class_avg }}</div>
+    <div class="lbl">Class Avg</div>
+  </div>
+  {% endif %}
+</div>
+
+{% if not rows %}
+<div class="content-card">
+  <div class="empty-state">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+    <h3>No students enrolled</h3>
+  </div>
+</div>
+{% elif not subjects %}
+<div class="content-card">
+  <div class="empty-state">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+    <h3>No subjects for {{ active_sem }}</h3>
+  </div>
+</div>
+{% else %}
+<div class="content-card">
+  <div class="summary-wrap">
+    <table class="summary-table">
+      <thead>
+        <tr>
+          <th class="th-name"># &nbsp; Student</th>
+          {% for sub in subjects %}
+          <th>
+            {{ sub.subject_code }}
+            {% if sub.teachers %}
+            <div class="th-sub">{{ sub.teachers | join(' / ') }}</div>
+            {% endif %}
+          </th>
+          {% endfor %}
+          <th class="th-divider">Gen. Avg</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td class="td-name">
+            <span style="color:var(--text-muted);font-size:11px;margin-right:8px;">{{ loop.index }}</span>
+            {{ row.student.last_name }}, {{ row.student.first_name }}{% if row.student.middle_name %} {{ row.student.middle_name[0]|upper }}.{% endif %}
+          </td>
+          {% for sub in subjects %}
+          {% set sg = row.sub_grades[sub.id] %}
+          <td>
+            {% if sg.avg is not none %}
+              <span class="gv {{ 'gv-pass' if sg.passing else 'gv-fail' }}">{{ sg.avg }}</span>
+            {% else %}
+              <span class="gv-none">—</span>
+            {% endif %}
+          </td>
+          {% endfor %}
+          <td class="td-gen">
+            {% if row.gen_avg is not none %}
+              <span class="gv {{ 'gv-pass' if row.passing else 'gv-fail' }}">{{ row.gen_avg }}</span>
+            {% else %}
+              <span class="gv-none">—</span>
+            {% endif %}
+          </td>
+          <td class="td-pf {% if row.gen_avg is not none %}{{ 'td-pass' if row.passing else 'td-fail' }}{% endif %}">
+            {% if row.gen_avg is not none %}{{ 'PASSED' if row.passing else 'FAILED' }}
+            {% else %}<span class="gv-none">—</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

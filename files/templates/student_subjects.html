@@ -98,13 +98,20 @@
 const SDATA = {
 {% for c in cards %}{% set s = c.sub %}
   {{ s.id }}: {
-    code:     {{ s.subject_code | tojson }},
-    name:     {{ s.subject_name | tojson }},
-    sem:      {{ (s.semester or '') | tojson }},
-    color:    {{ c.color | tojson }},
-    teacher:  {{ (s.first_name ~ ' ' ~ s.last_name) | tojson }},
-    email:    {{ (s.teacher_email or '') | tojson }},
-    schedules: [{% for sc in s.schedules %}{ day:{{ sc.day|tojson }},t_start:{{ sc.time_start|tojson }},t_end:{{ sc.time_end|tojson }},room:{{ (sc.room or '')|tojson }} },{% endfor %}],
+    code:  {{ s.subject_code | tojson }},
+    name:  {{ s.subject_name | tojson }},
+    sem:   {{ (s.semester or '') | tojson }},
+    color: {{ c.color | tojson }},
+    teachers: [
+      {% for t in s.teachers %}
+      {
+        name: {{ (t.first_name ~ ' ' ~ t.last_name) | tojson }},
+        initials: {{ t.initials | tojson }},
+        email: {{ (t.email or '') | tojson }},
+        schedules: [{% for sc in t.schedules %}{ day:{{ sc.day|tojson }},t_start:{{ sc.time_start|tojson }},t_end:{{ sc.time_end|tojson }},room:{{ (sc.room or '')|tojson }} },{% endfor %}],
+      },
+      {% endfor %}
+    ],
   },
 {% endfor %}
 };
@@ -146,7 +153,9 @@ const SDATA = {
     <div class="card-desc-lbl">Description</div>
     <div class="card-desc-val">{{ s.subject_name }}</div>
     <div class="card-meta">
-      <span class="card-meta-item">{{ s.first_name }} {{ s.last_name }}</span>
+      {% if s.teachers %}
+      <span class="card-meta-item">{{ s.teachers[0].first_name }} {{ s.teachers[0].last_name }}{% if s.teachers|length > 1 %} +{{ s.teachers|length - 1 }} more{% endif %}</span>
+      {% endif %}
       {% if s.semester == 'Whole Year' %}<span class="card-meta-item" style="color:#b45309;font-weight:600;">Whole Year</span>{% endif %}
     </div>
   </div>
@@ -188,16 +197,8 @@ const SDATA = {
       <div class="modal-banner-name" id="mName"></div>
     </div>
     <div class="modal-body">
-      <div class="modal-sec-title">Subject Teacher</div>
-      <div class="teacher-row">
-        <div class="teacher-av" id="mAvatar"></div>
-        <div>
-          <div class="teacher-name" id="mTeacher"></div>
-          <div class="teacher-email" id="mEmail"></div>
-        </div>
-      </div>
-      <div class="modal-sec-title">Schedule</div>
-      <div class="sched-row" id="mSched"></div>
+      <div class="modal-sec-title">Teacher(s) &amp; Schedule</div>
+      <div id="mTeacherBody"></div>
       <div class="modal-sec-title">Subject Info</div>
       <div class="info-row2" id="mInfo"></div>
     </div>
@@ -222,23 +223,32 @@ function openSubModal(id) {
   document.getElementById('mCode').textContent   = s.code;
   document.getElementById('mName').textContent   = s.name;
 
-  const initials = s.teacher.trim().split(/\s+/).map(w => w[0] || '').join('').toUpperCase().slice(0, 2);
-  document.getElementById('mAvatar').textContent  = initials;
-  document.getElementById('mTeacher').textContent = s.teacher;
-  document.getElementById('mEmail').textContent   = s.email || '';
-
-  let sched = '';
-  if (s.schedules && s.schedules.length) {
-    s.schedules.forEach(sc => {
-      let pill = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">`;
-      if (sc.day)     pill += `<span class="sched-pill">📆 ${sc.day}</span>`;
-      if (sc.t_start) pill += `<span class="sched-pill">🕐 ${sc.t_start} – ${sc.t_end}</span>`;
-      if (sc.room)    pill += `<span class="sched-pill">📍 ${sc.room}</span>`;
-      pill += `</div>`;
-      sched += pill;
+  // Teachers section
+  let teachersHtml = '';
+  if (s.teachers && s.teachers.length) {
+    s.teachers.forEach(t => {
+      let schedHtml = '';
+      if (t.schedules && t.schedules.length) {
+        t.schedules.forEach(sc => {
+          schedHtml += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px;">`;
+          if (sc.day)     schedHtml += `<span class="sched-pill">📆 ${sc.day}</span>`;
+          if (sc.t_start) schedHtml += `<span class="sched-pill">🕐 ${sc.t_start} – ${sc.t_end}</span>`;
+          if (sc.room)    schedHtml += `<span class="sched-pill">📍 ${sc.room}</span>`;
+          schedHtml += `</div>`;
+        });
+      }
+      teachersHtml += `
+        <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:14px;">
+          <div class="teacher-av" style="flex-shrink:0;">${t.initials}</div>
+          <div style="flex:1;">
+            <div class="teacher-name">${t.name}</div>
+            ${t.email ? `<div class="teacher-email">${t.email}</div>` : ''}
+            <div style="margin-top:6px;">${schedHtml || '<span style="color:var(--text-muted);font-size:12px;">No schedule</span>'}</div>
+          </div>
+        </div>`;
     });
   }
-  document.getElementById('mSched').innerHTML = sched || '<span style="color:var(--text-muted);font-size:13px;">No schedule info</span>';
+  document.getElementById('mTeacherBody').innerHTML = teachersHtml || '<span style="color:var(--text-muted);">No teacher assigned</span>';
 
   document.getElementById('mInfo').innerHTML = `<b>Semester:</b> ${s.sem || '—'}`;
 

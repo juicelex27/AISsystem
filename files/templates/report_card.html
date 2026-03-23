@@ -1,7 +1,7 @@
 {% extends "layout.html" %}
 {% block title %}Report Card — {{ student.first_name }} {{ student.last_name }}{% endblock %}
 {% block page_title %}Report Card{% endblock %}
-{% block page_subtitle %}{{ student.first_name }} {{ student.last_name }} · {{ student.section_name }} · Grade {{ student.grade_level }}{% endblock %}
+{% block page_subtitle %}{{ student.first_name }} {{ student.last_name }} · {{ student.section_name }} · Grade {{ student.sec_grade }}{% endblock %}
 
 {% block header_actions %}
   <a href="{{ url_for('student_profile', student_id=student.id) }}" class="btn btn-secondary">
@@ -17,36 +17,41 @@
 {% block extra_css %}
 <style>
 .rc-table { width:100%; border-collapse:collapse; font-size:13px; }
-.rc-table th { padding:10px 14px; text-align:center; font-size:11px; font-weight:700;
+.rc-table th { padding:9px 12px; text-align:center; font-size:10px; font-weight:700;
   text-transform:uppercase; letter-spacing:.4px; color:var(--text-muted);
-  border-bottom:2px solid var(--border); }
-.rc-table th.col-sub { text-align:left; }
-.rc-table td { padding:10px 14px; border-bottom:1px solid var(--border); text-align:center; }
+  border-bottom:2px solid var(--border); white-space:nowrap; }
+.rc-table th.col-sub { text-align:left; min-width:180px; }
+.rc-table td { padding:9px 12px; border-bottom:1px solid var(--border); text-align:center; vertical-align:middle; }
 .rc-table td.col-sub { text-align:left; }
 .rc-table tbody tr:hover { background:#f9fafb; }
 .rc-table tfoot td { font-weight:800; border-top:2px solid var(--border); border-bottom:none; background:#f8fafc; }
-.rc-table .summary-row td { background:#f0f9ff; border-top:2px solid #bae6fd; font-weight:700; }
-.rc-table .summary-row td.col-sub { color:#0369a1; }
+.sem-header td { background:#f1f5f9; font-size:11px; font-weight:800; text-transform:uppercase;
+  letter-spacing:.5px; color:#374151; padding:8px 12px; border-top:2px solid var(--border); }
+.sem-avg-row td { background:#eff6ff; border-top:1.5px solid #bfdbfe; font-weight:700; }
+.sem-avg-row td.col-sub { color:#1e40af; font-size:12px; text-transform:uppercase; letter-spacing:.3px; }
+.gen-avg-row td { background:#f8fafc; border-top:2px solid var(--border); font-weight:800; font-size:14px; }
 .grade-pass { color:#16a34a; font-weight:700; }
 .grade-fail { color:#dc2626; font-weight:700; }
 .grade-none { color:#9ca3af; }
 .pending-badge { display:inline-flex;align-items:center;gap:3px;padding:2px 8px;
   border-radius:99px;font-size:10px;font-weight:700;
   background:#fef3c7;color:#92400e;border:1px solid #fcd34d; }
-.honor-badge { display:inline-flex; align-items:center; gap:6px;
-  padding:4px 14px; border-radius:99px; font-size:12px; font-weight:700; }
+.honor-badge { display:inline-flex; align-items:center; gap:5px;
+  padding:3px 12px; border-radius:99px; font-size:11px; font-weight:700; }
 .honor-highest { background:#fef9c3; color:#854d0e; border:1.5px solid #fde68a; }
+.honor-high    { background:#f3e8ff; color:#7c3aed; border:1.5px solid #e9d5ff; }
 .honor-with    { background:#dbeafe; color:#1e40af; border:1.5px solid #bfdbfe; }
-.honor-honors  { background:#f0fdf4; color:#166534; border:1.5px solid #bbf7d0; }
 @media print {
   .sidebar,.top-header,.header-actions,.btn { display:none !important; }
   .main-content { margin-left:0 !important; }
+  .page-body { padding:8px !important; }
 }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="content-card">
+
   <!-- Student header -->
   <div style="display:flex;align-items:center;gap:20px;padding:20px 24px;border-bottom:1px solid var(--border);flex-wrap:wrap;">
     <div style="width:56px;height:56px;border-radius:50%;background:var(--brand-gradient);color:#fff;
@@ -55,15 +60,15 @@
     </div>
     <div style="flex:1;">
       <div style="font-size:18px;font-weight:800;">
-        {{ student.last_name }}, {{ student.first_name }}{% if student.middle_name %} {{ student.middle_name }}{% endif %}
+        {{ student.last_name }}, {{ student.first_name }}{% if student.middle_name|clean_mn %} {{ student.middle_name|clean_mn|upper|first }}.{% endif %}
       </div>
       <div style="font-size:12px;color:var(--text-muted);margin-top:3px;">
-        ID: {{ student.student_id }} &ensp;·&ensp; {{ student.section_name }}, Grade {{ student.grade_level }}
+        ID: {{ student.student_id }} &ensp;·&ensp; {{ student.section_name }}, Grade {{ student.sec_grade }}
         {% if student.strand_code %} &ensp;·&ensp; {{ student.strand_code }}{% endif %}
       </div>
     </div>
     {% if general_avg is not none %}
-    <div style="text-align:center;margin-right:12px;">
+    <div style="text-align:center;">
       <div style="font-size:32px;font-weight:900;letter-spacing:-1.5px;
                   color:{{ '#16a34a' if general_avg >= passing_grade else '#dc2626' }};">
         {{ '%.2f'|format(general_avg) }}
@@ -73,8 +78,8 @@
       </div>
       {% if honor %}
       <div style="margin-top:6px;">
-        <span class="honor-badge {{ 'honor-highest' if honor=='With Highest Honors' else ('honor-with' if honor=='With Honors' else 'honor-honors') }}">
-          <svg viewBox="0 0 24 24" fill="currentColor" style="width:12px;height:12px;"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
+        <span class="honor-badge {{ 'honor-highest' if honor=='With Highest Honors' else ('honor-high' if honor=='With High Honors' else 'honor-with') }}">
+          <svg viewBox="0 0 24 24" fill="currentColor" style="width:11px;height:11px;"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
           {{ honor }}
         </span>
       </div>
@@ -83,102 +88,117 @@
     {% endif %}
   </div>
 
-  {% if subject_rows %}
+  {% set has_any_rows = sem_data['1st Semester'].rows or sem_data['2nd Semester'].rows %}
+  {% if has_any_rows %}
   <div style="overflow-x:auto;">
     <table class="rc-table">
       <thead>
         <tr>
-          <th class="col-sub" style="min-width:180px;">Subject</th>
-          {% for q in quarters %}<th>{{ q }}</th>{% endfor %}
+          <th class="col-sub">Subject</th>
+          <th>Prelim</th>
+          <th>Midterm</th>
+          <th>Semi-Final</th>
+          <th>Final</th>
           <th>Average</th>
           <th>Remarks</th>
         </tr>
       </thead>
       <tbody>
-        {% for sr in subject_rows %}
-        <tr>
-          <td class="col-sub">
-            <div style="font-weight:600;">{{ sr.subject.subject_name }}</div>
-            <div style="font-size:11px;color:var(--text-muted);">{{ sr.subject.subject_code }}</div>
-          </td>
-          {% for q in quarters %}
-          {% set qd = sr.quarters[q] %}
-          <td>
-            {% if qd.visible and qd.grade is not none %}
-              <span class="{{ 'grade-pass' if qd.grade >= passing_grade else 'grade-fail' }}">
-                {{ '%.2f'|format(qd.grade) }}
-              </span>
-            {% elif qd.has_data and not qd.visible %}
-              <span class="pending-badge" title="Awaiting admin approval">⏳</span>
-            {% else %}
-              <span class="grade-none">—</span>
-            {% endif %}
-          </td>
-          {% endfor %}
-          <td class="{{ 'grade-pass' if sr.average is not none and sr.average >= passing_grade else ('grade-fail' if sr.average is not none else 'grade-none') }}"
-              style="font-size:14px;">
-            {{ '%.2f'|format(sr.average) if sr.average is not none else '—' }}
-          </td>
-          <td>
-            {% if sr.average is not none %}
-              <span style="color:{{ '#16a34a' if sr.passing else '#dc2626' }};font-weight:600;font-size:12px;">
-                {{ 'PASSED' if sr.passing else 'FAILED' }}
-              </span>
-            {% elif sr.has_any %}
-              <span class="pending-badge">⏳ Pending</span>
-            {% else %}
-              <span class="grade-none" style="font-size:12px;">—</span>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
 
-      <!-- Semester averages -->
-      {% if sem1_avg is not none or sem2_avg is not none %}
-      <tbody>
-        {% if sem1_avg is not none %}
-        <tr class="summary-row">
-          <td class="col-sub" style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;">
-            📗 1st Semester Average
-          </td>
-          <td colspan="{{ quarters|length }}"></td>
-          <td class="{{ 'grade-pass' if sem1_avg >= passing_grade else 'grade-fail' }}" style="font-size:15px;">{{ '%.2f'|format(sem1_avg) }}</td>
-          <td><span style="color:{{ '#16a34a' if sem1_avg >= passing_grade else '#dc2626' }};font-weight:600;font-size:12px;">{{ 'PASSED' if sem1_avg >= passing_grade else 'FAILED' }}</span></td>
-        </tr>
+      {% for sem_name in ['1st Semester', '2nd Semester'] %}
+      {% set sd = sem_data[sem_name] %}
+      {% if sd.rows %}
+      <!-- Semester header -->
+      <tr class="sem-header">
+        <td colspan="7">
+          {{ '📗' if '1st' in sem_name else '📘' }} {{ sem_name }}
+          {% if sd.avg is not none %} — Average: {{ '%.2f'|format(sd.avg) }}{% endif %}
+        </td>
+      </tr>
+
+      {% for sr in sd.rows %}
+      <tr>
+        <td class="col-sub">
+          <div style="font-weight:600;">{{ sr.subject.subject_name }}</div>
+          <div style="font-size:11px;color:var(--text-muted);">{{ sr.subject.subject_code }}{% if sr.subject.semester == 'Whole Year' %} · <span style="color:#b45309;">WY</span>{% endif %}</div>
+        </td>
+        {% for q in ['Prelim','Midterm','Semi-Final','Final'] %}
+        {% if q in sr.quarters %}
+        {% set qd = sr.quarters[q] %}
+        <td>
+          {% if qd.visible and qd.grade is not none %}
+            <span class="{{ 'grade-pass' if qd.grade >= passing_grade else 'grade-fail' }}">
+              {{ '%.2f'|format(qd.grade) }}
+            </span>
+          {% elif qd.has_data and not qd.visible %}
+            <span class="pending-badge" title="Awaiting approval">⏳</span>
+          {% else %}
+            <span class="grade-none">—</span>
+          {% endif %}
+        </td>
+        {% else %}
+        <td><span class="grade-none">—</span></td>
         {% endif %}
-        {% if sem2_avg is not none %}
-        <tr class="summary-row">
-          <td class="col-sub" style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;">
-            📘 2nd Semester Average
-          </td>
-          <td colspan="{{ quarters|length }}"></td>
-          <td class="{{ 'grade-pass' if sem2_avg >= passing_grade else 'grade-fail' }}" style="font-size:15px;">{{ '%.2f'|format(sem2_avg) }}</td>
-          <td><span style="color:{{ '#16a34a' if sem2_avg >= passing_grade else '#dc2626' }};font-weight:600;font-size:12px;">{{ 'PASSED' if sem2_avg >= passing_grade else 'FAILED' }}</span></td>
-        </tr>
-        {% endif %}
-      </tbody>
+        {% endfor %}
+        <td class="{{ 'grade-pass' if sr.average is not none and sr.average >= passing_grade else ('grade-fail' if sr.average is not none else 'grade-none') }}"
+            style="font-size:14px;">
+          {{ '%.2f'|format(sr.average) if sr.average is not none else '—' }}
+        </td>
+        <td>
+          {% if sr.average is not none %}
+            <span style="color:{{ '#16a34a' if sr.passing else '#dc2626' }};font-weight:600;font-size:12px;">
+              {{ 'PASSED' if sr.passing else 'FAILED' }}
+            </span>
+          {% else %}
+            <span class="grade-none" style="font-size:12px;">—</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+
+      <!-- Semester average row -->
+      {% if sd.avg is not none %}
+      <tr class="sem-avg-row">
+        <td class="col-sub">{{ sem_name }} Average</td>
+        <td colspan="4"></td>
+        <td class="{{ 'grade-pass' if sd.avg >= passing_grade else 'grade-fail' }}" style="font-size:14px;">
+          {{ '%.2f'|format(sd.avg) }}
+        </td>
+        <td>
+          <span style="color:{{ '#16a34a' if sd.avg >= passing_grade else '#dc2626' }};font-weight:600;font-size:12px;">
+            {{ 'PASSED' if sd.avg >= passing_grade else 'FAILED' }}
+          </span>
+        </td>
+      </tr>
       {% endif %}
 
+      {% endif %}
+      {% endfor %}
+
+      </tbody>
+
+      <!-- General average footer -->
       <tfoot>
-        <tr>
-          <td class="col-sub" style="font-size:12px;text-transform:uppercase;letter-spacing:.4px;">
+        <tr class="gen-avg-row">
+          <td class="col-sub" style="font-size:12px;text-transform:uppercase;letter-spacing:.4px;font-weight:800;">
             General Average
           </td>
-          <td colspan="{{ quarters|length }}"></td>
+          <td colspan="4"></td>
           <td class="{{ 'grade-pass' if general_avg is not none and general_avg >= passing_grade else ('grade-fail' if general_avg is not none else 'grade-none') }}"
-              style="font-size:16px;">
+              style="font-size:16px;font-weight:900;">
             {{ '%.2f'|format(general_avg) if general_avg is not none else '—' }}
           </td>
           <td>
             {% if general_avg is not none %}
               {% if honor %}
-                <span class="honor-badge {{ 'honor-highest' if honor=='With Highest Honors' else ('honor-with' if honor=='With Honors' else 'honor-honors') }}"
-                      style="font-size:11px;">{{ honor }}</span>
+                <span class="honor-badge {{ 'honor-highest' if honor=='With Highest Honors' else ('honor-high' if honor=='With High Honors' else 'honor-with') }}">
+                  <svg viewBox="0 0 24 24" fill="currentColor" style="width:10px;height:10px;"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
+                  {{ honor }}
+                </span>
               {% elif general_avg >= passing_grade %}
-                <span style="color:#16a34a;font-weight:600;font-size:12px;">PASSED</span>
+                <span style="color:#16a34a;font-weight:700;font-size:12px;">PASSED</span>
               {% else %}
-                <span style="color:#dc2626;font-weight:600;font-size:12px;">FAILED</span>
+                <span style="color:#dc2626;font-weight:700;font-size:12px;">FAILED</span>
               {% endif %}
             {% endif %}
           </td>
@@ -194,5 +214,6 @@
     <p>Grades will appear here once they are approved.</p>
   </div>
   {% endif %}
+
 </div>
 {% endblock %}

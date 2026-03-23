@@ -4,6 +4,10 @@
 {% block page_subtitle %}{{ section.section_name }} · Grade {{ section.grade_level }}{% if section.strand_code %} · {{ section.strand_code }}{% endif %}{% endblock %}
 
 {% block header_actions %}
+  <a href="{{ url_for('grade_summary', sec_id=section.id, sem=active_sem) }}" class="btn btn-secondary">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm10 0h8v8h-8z"/></svg>
+    Summary
+  </a>
   <a href="{{ url_for('grades_home') }}" class="btn btn-secondary">
     <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
     Back
@@ -11,6 +15,7 @@
   {% if sel_sub_id %}
   <form method="GET" action="{{ url_for('admin_export_grades', sec_id=section.id) }}" style="display:flex;align-items:center;gap:6px;">
     <input type="hidden" name="subject_id" value="{{ sel_sub_id }}">
+    <input type="hidden" name="semester" value="{{ active_sem if (not sel_subject or sel_subject.semester in ('','Whole Year')) else sel_subject.semester }}">
     <select name="period" class="form-control" style="width:140px;padding:6px 10px;font-size:13px;">
       <option value="all">All Periods</option>
       <option value="Prelim">Prelim</option>
@@ -157,8 +162,10 @@
   {% for sub in subjects %}
   <a href="{{ url_for('grade_sheet', sec_id=section.id, sem=active_sem, subject_id=sub.id) }}"
      class="subject-tab {{ 'active' if sub.id == sel_sub_id else '' }}">
-    {{ sub.subject_name }}
-    {% if sub.semester == 'Whole Year' %}<span style="font-size:10px;margin-left:3px;opacity:.8;"> · Whole Year</span>{% endif %}
+    <div>{{ sub.subject_name }}</div>
+    <div style="font-size:10px;opacity:.7;margin-top:2px;font-weight:500;">
+      {{ sub.teachers | join(', ') }}{% if sub.semester == 'Whole Year' %} · WY{% endif %}
+    </div>
   </a>
   {% endfor %}
 </div>
@@ -173,6 +180,7 @@
       <div style="font-size:12px;color:var(--text-muted);">
         {{ sel_subject.subject_code }}
         {% if sel_subject.semester %} · <span style="color:{% if sel_subject.semester=='1st Semester' %}#1e40af{% elif sel_subject.semester=='2nd Semester' %}#7e22ce{% else %}#854d0e{% endif %};">{{ sel_subject.semester }}</span>{% endif %}
+        {% if sel_subject.teachers %} · 👤 {{ sel_subject.teachers | join(' / ') }}{% endif %}
       </div>
     </div>
     <div style="margin-left:auto;display:flex;gap:20px;">
@@ -224,7 +232,7 @@
         {% for sg in students %}{% set st = sg.student %}
         <tr>
           <td style="padding-left:16px;">
-            <div style="font-weight:600;font-size:13px;">{{ st.last_name }}, {{ st.first_name }}{% if st.middle_name %} {{ st.middle_name[0] }}.{% endif %}</div>
+            <div style="font-weight:600;font-size:13px;">{{ st.last_name }}, {{ st.first_name }}{% if st.middle_name|clean_mn %} {{ st.middle_name|clean_mn|upper|first }}.{% endif %}</div>
             <div style="font-size:11px;color:var(--text-muted);">{{ st.student_id }}</div>
           </td>
           {% for p in quarters %}{% set qd = sg.quarters[p] %}
@@ -308,6 +316,8 @@ const SUB_ID   = {{ sel_sub_id or 'null' }};
 const SEC_ID   = {{ section.id }};
 const PASSING  = {{ passing_grade }};
 const PERIODS  = {{ quarters | tojson }};
+const SEMESTER = {{ active_sem | tojson }};
+const SUB_SEM  = {{ (sel_subject.semester if sel_subject else '') | tojson }};
 
 let qStatus = {};
 PERIODS.forEach(p => qStatus[p] = 'Draft');
@@ -323,7 +333,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function loadStatuses() {
   try {
-    const r = await fetch(`${STATUS_URL}?subject_id=${SUB_ID}&section_id=${SEC_ID}`);
+    const _sem4s = (SUB_SEM==='Whole Year'||SUB_SEM==='')?SEMESTER:SUB_SEM;
+    const r = await fetch(`${STATUS_URL}?subject_id=${SUB_ID}&section_id=${SEC_ID}&semester=${encodeURIComponent(_sem4s)}`);
     const d = await r.json();
     PERIODS.forEach(p => { if (d[p]) qStatus[p] = d[p].status; });
   } catch(e) {}
@@ -382,7 +393,8 @@ async function doAction(action, period) {
 async function submitAction(action, period, reason) {
   try {
     const r = await fetch(APPROVE_URL, {method:'POST',headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({subject_id:SUB_ID, section_id:SEC_ID, quarter:period, action, reason})});
+      body: JSON.stringify({subject_id:SUB_ID, section_id:SEC_ID, quarter:period, action, reason,
+        semester:(SUB_SEM==='Whole Year'||SUB_SEM==='')?SEMESTER:SUB_SEM})});
     const d = await r.json();
     if (d.ok) { updatePeriodUI(period, d.status); toast(`${period} ${d.status.toLowerCase()}.`, 'success'); }
     else toast(d.error || 'Action failed.', 'error');
@@ -406,7 +418,9 @@ async function initSave(el) {
 async function attemptSave(el, v, reason) {
   const p = {
     student_id: parseInt(el.dataset.student), subject_id: parseInt(el.dataset.subject),
-    section_id: parseInt(el.dataset.section), quarter: el.dataset.quarter,
+    section_id: parseInt(el.dataset.section),
+    semester: (SUB_SEM === 'Whole Year' || SUB_SEM === '') ? SEMESTER : SUB_SEM,
+    quarter: el.dataset.quarter,
     component: el.dataset.component, value: v, reason
   };
   try {
@@ -509,6 +523,7 @@ async function clearGrades() {
     const fd = new FormData();
     fd.append('subject_id', SUB_ID);
     fd.append('period', period);
+    fd.append('semester', (SUB_SEM === 'Whole Year' || SUB_SEM === '') ? SEMESTER : SUB_SEM);
     const r = await fetch(`/grades/section/${SEC_ID}/clear`, {method:'POST', body:fd});
     const d = await r.json();
     if (d.ok) {
@@ -528,7 +543,7 @@ async function handleAdminImport(input) {
   fd.append('csv_file', file);
   toast('Importing grades…', 'success');
   try {
-    const r = await fetch(`/grades/section/${SEC_ID}/import?subject_id=${SUB_ID}`, {method:'POST', body:fd});
+    const r = await fetch(`/grades/section/${SEC_ID}/import?subject_id=${SUB_ID}&semester=${encodeURIComponent((SUB_SEM === 'Whole Year' || SUB_SEM === '') ? SEMESTER : SUB_SEM)}`, {method:'POST', body:fd});
     const d = await r.json();
     if (d.ok) {
       let msg = `Imported: ${d.updated} grade(s) updated.`;

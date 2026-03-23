@@ -137,7 +137,7 @@
             <select name="grade_level" class="form-control" required>
               <option value="">Select Grade</option>
               {% for g in ['7','8','9','10','11','12'] %}
-              <option value="{{ g }}">Grade {{ g }}</option>
+              <option value="Grade {{ g }}">Grade {{ g }}</option>
               {% endfor %}
             </select>
           </div>
@@ -196,7 +196,7 @@
             <label>Grade Level</label>
             <select id="edit_grade_level_sec" name="grade_level" class="form-control" required>
               {% for g in ['7','8','9','10','11','12'] %}
-              <option value="{{ g }}">Grade {{ g }}</option>
+              <option value="Grade {{ g }}">Grade {{ g }}</option>
               {% endfor %}
             </select>
           </div>

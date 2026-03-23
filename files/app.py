@@ -7,6 +7,10 @@ from functools import wraps
 
 app = Flask(__name__)
 app.secret_key = 'sis_secret_key_2024_secure'
+
+@app.template_filter('clean_mn')
+def clean_mn_filter(val):
+    return clean_middle_name(val)
 DATABASE = 'school.db'
 
 def get_db():
@@ -120,6 +124,7 @@ def init_db():
             student_id          INTEGER NOT NULL,
             subject_id          INTEGER NOT NULL,
             section_id          INTEGER NOT NULL,
+            semester            TEXT NOT NULL DEFAULT '',
             quarter             TEXT NOT NULL CHECK(quarter IN ('Prelim','Midterm','Semi-Final','Final')),
             written_works       REAL,
             performance_tasks   REAL,
@@ -128,7 +133,7 @@ def init_db():
             finals              REAL,
             created_at          TEXT DEFAULT (datetime('now')),
             updated_at          TEXT DEFAULT (datetime('now')),
-            UNIQUE(student_id, subject_id, section_id, quarter),
+            UNIQUE(student_id, subject_id, section_id, semester, quarter),
             FOREIGN KEY (student_id)  REFERENCES students(id)  ON DELETE CASCADE,
             FOREIGN KEY (subject_id)  REFERENCES subjects(id)  ON DELETE CASCADE,
             FOREIGN KEY (section_id)  REFERENCES sections(id)  ON DELETE CASCADE
@@ -138,6 +143,7 @@ def init_db():
             teacher_id  INTEGER,
             subject_id  INTEGER NOT NULL,
             section_id  INTEGER NOT NULL,
+            semester    TEXT NOT NULL DEFAULT '',
             quarter     TEXT NOT NULL CHECK(quarter IN ('Prelim','Midterm','Semi-Final','Final')),
             status      TEXT NOT NULL DEFAULT 'Draft' CHECK(status IN ('Draft','Submitted','Approved','Locked')),
             submitted_at TEXT,
@@ -146,7 +152,7 @@ def init_db():
             locked_at   TEXT,
             unlock_reason TEXT,
             updated_at  TEXT DEFAULT (datetime('now')),
-            UNIQUE(subject_id, section_id, quarter),
+            UNIQUE(subject_id, section_id, semester, quarter),
             FOREIGN KEY (subject_id)  REFERENCES subjects(id)  ON DELETE CASCADE,
             FOREIGN KEY (section_id)  REFERENCES sections(id)  ON DELETE CASCADE
         );
@@ -193,6 +199,177 @@ def init_db():
         conn.execute("ALTER TABLE grade_submissions ADD COLUMN submitted_at TEXT")
     except Exception:
         pass
+    # Add semester column to grade_submissions
+    try:
+        conn.execute("ALTER TABLE grade_submissions ADD COLUMN semester TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass
+    # Rebuild grade_submissions UNIQUE constraint to include semester
+    try:
+        tbl = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='grade_submissions'").fetchone()
+        if tbl and 'semester, quarter' not in (tbl['sql'] or ''):
+            conn.executescript(
+                "ALTER TABLE grade_submissions RENAME TO gs_sem_backup;"
+                "CREATE TABLE grade_submissions ("
+                "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "    teacher_id INTEGER,"
+                "    subject_id INTEGER NOT NULL,"
+                "    section_id INTEGER NOT NULL,"
+                "    semester TEXT NOT NULL DEFAULT '',"
+                "    quarter TEXT NOT NULL CHECK(quarter IN ('Prelim','Midterm','Semi-Final','Final')),"
+                "    status TEXT NOT NULL DEFAULT 'Draft' CHECK(status IN ('Draft','Submitted','Approved','Locked')),"
+                "    submitted_at TEXT, approved_at TEXT, approved_by TEXT,"
+                "    locked_at TEXT, unlock_reason TEXT,"
+                "    updated_at TEXT DEFAULT (datetime('now')),"
+                "    UNIQUE(subject_id, section_id, semester, quarter),"
+                "    FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE,"
+                "    FOREIGN KEY (section_id) REFERENCES sections(id) ON DELETE CASCADE"
+                ");"
+                "INSERT OR IGNORE INTO grade_submissions "
+                "    (teacher_id,subject_id,section_id,semester,quarter,status,"
+                "     submitted_at,approved_at,approved_by,locked_at,unlock_reason,updated_at) "
+                "SELECT teacher_id,subject_id,section_id,COALESCE(semester,''),quarter,status,"
+                "       submitted_at,approved_at,approved_by,locked_at,unlock_reason,updated_at "
+                "FROM gs_sem_backup;"
+                "DROP TABLE gs_sem_backup;"
+            )
+            conn.commit()
+    except Exception:
+        pass
+    # Migrate grade_submissions semester='' — assign from subject semester
+    try:
+        empty_sub_rows = conn.execute(
+            "SELECT DISTINCT gs.subject_id, gs.section_id FROM grade_submissions gs "
+            "JOIN subjects sub ON gs.subject_id=sub.id "
+            "WHERE gs.semester='' AND sub.semester IN ('1st Semester','2nd Semester')"
+        ).fetchall()
+        for row in empty_sub_rows:
+            sub = conn.execute("SELECT semester FROM subjects WHERE id=?", (row['subject_id'],)).fetchone()
+            if sub and sub['semester'] in ('1st Semester', '2nd Semester'):
+                conn.execute(
+                    "UPDATE grade_submissions SET semester=? WHERE subject_id=? AND section_id=? AND semester=''",
+                    (sub['semester'], row['subject_id'], row['section_id'])
+                )
+        conn.commit()
+    except Exception:
+        pass
+    # Add semester column to grades table if missing
+    try:
+        conn.execute("ALTER TABLE grades ADD COLUMN semester TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass
+    # Fix bare number grade_levels stored in students
+    try:
+        for num in ('7','8','9','10','11','12'):
+            conn.execute("UPDATE students SET grade_level=? WHERE grade_level=?",
+                         ('Grade ' + num, num))
+        conn.commit()
+    except Exception:
+        pass
+    # Create attendance tables if missing
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS attendance_events (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, event_type TEXT NOT NULL DEFAULT 'school', event_date TEXT NOT NULL, time_start TEXT, time_end TEXT, late_allowance_minutes INTEGER DEFAULT 0, description TEXT, section_id INTEGER, subject_id INTEGER, teacher_id INTEGER, authorized_type TEXT DEFAULT 'teacher', authorized_id INTEGER, created_by TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY (section_id) REFERENCES sections(id) ON DELETE CASCADE, FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE, FOREIGN KEY (teacher_id) REFERENCES teachers(id) ON DELETE CASCADE)")
+        # Migrations for existing attendance_events table
+        for _col, _def in [('created_by_student','INTEGER'),('is_shared','INTEGER DEFAULT 0')]:
+            try:
+                conn.execute(f"ALTER TABLE attendance_categories ADD COLUMN {_col} {_def}")
+            except Exception:
+                pass
+        for _col, _def in [('time_start','TEXT'),('time_end','TEXT'),
+                           ('late_allowance_minutes','INTEGER DEFAULT 0'),
+                           ('authorized_type',"TEXT DEFAULT 'teacher'"),('authorized_id','INTEGER'),
+                           ('is_compulsory',"INTEGER DEFAULT 1"),
+                           ('recorded_scope',"TEXT DEFAULT 'all'"),
+                           ('attendee_positions','TEXT'),
+                           ('attendee_org_ids','TEXT'),
+                           ('category_id','INTEGER REFERENCES attendance_categories(id) ON DELETE SET NULL')]:
+            try:
+                conn.execute(f"ALTER TABLE attendance_events ADD COLUMN {_col} {_def}")
+            except Exception:
+                pass
+        conn.execute("CREATE TABLE IF NOT EXISTS attendance_authorized (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL, person_type TEXT NOT NULL CHECK(person_type IN ('teacher','student')), person_id INTEGER NOT NULL, UNIQUE(event_id,person_type,person_id), FOREIGN KEY (event_id) REFERENCES attendance_events(id) ON DELETE CASCADE)")
+        conn.execute("CREATE TABLE IF NOT EXISTS attendance_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, description TEXT, color TEXT DEFAULT '#6b7280', icon TEXT DEFAULT '🎯', created_by_student INTEGER, is_shared INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')))")
+        conn.execute("CREATE TABLE IF NOT EXISTS organizations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, short_name TEXT, description TEXT, org_type TEXT DEFAULT 'organization', color TEXT DEFAULT '#3b82f6', created_at TEXT DEFAULT (datetime('now')))")
+        conn.execute("CREATE TABLE IF NOT EXISTS org_positions (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, position_name TEXT NOT NULL, rank_order INTEGER DEFAULT 0, UNIQUE(org_id, position_name), FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE)")
+        conn.execute("CREATE TABLE IF NOT EXISTS org_members (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, position_id INTEGER, student_id INTEGER NOT NULL, school_year TEXT, is_active INTEGER DEFAULT 1, UNIQUE(org_id, student_id, school_year), FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE, FOREIGN KEY (position_id) REFERENCES org_positions(id) ON DELETE SET NULL, FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)")
+        for _col, _def in [
+            ('category_id', 'INTEGER REFERENCES attendance_categories(id) ON DELETE SET NULL'),
+            ('is_compulsory', 'INTEGER DEFAULT 1'),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE attendance_events ADD COLUMN {_col} {_def}")
+            except Exception: pass
+        conn.execute("CREATE TABLE IF NOT EXISTS attendance_records (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL, student_id INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'Present' CHECK(status IN ('Present','Absent','Excused','Late')), note TEXT, recorded_at TEXT DEFAULT (datetime('now')), UNIQUE(event_id, student_id), FOREIGN KEY (event_id) REFERENCES attendance_events(id) ON DELETE CASCADE, FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)")
+        conn.commit()
+    except Exception:
+        pass
+    # Fix bare number grade_levels stored in sections
+    try:
+        for num in ('7','8','9','10','11','12'):
+            conn.execute("UPDATE sections SET grade_level=? WHERE grade_level=?",
+                         ('Grade ' + num, num))
+        conn.commit()
+    except Exception:
+        pass
+
+    # Migrate grades with semester='' for NON-Whole-Year subjects only
+    # WY subjects are skipped — their semester is determined by which teacher encoded them
+    # and must be re-encoded by the teacher after the semester fix
+    try:
+        empty_grades = conn.execute(
+            "SELECT DISTINCT g.student_id, g.subject_id, g.section_id, g.quarter "
+            "FROM grades g "
+            "JOIN subjects sub ON g.subject_id = sub.id "
+            "WHERE g.semester='' AND sub.semester IN ('1st Semester','2nd Semester')"
+        ).fetchall()
+        for row in empty_grades:
+            sub = conn.execute("SELECT semester FROM subjects WHERE id=?", (row['subject_id'],)).fetchone()
+            correct_sem = sub['semester']
+            conn.execute(
+                "UPDATE grades SET semester=? "
+                "WHERE student_id=? AND subject_id=? AND section_id=? AND quarter=? AND semester=''",
+                (correct_sem, row['student_id'], row['subject_id'], row['section_id'], row['quarter'])
+            )
+        if empty_grades:
+            conn.commit()
+    except Exception:
+        pass
+    # Recreate grades table with UNIQUE(student_id, subject_id, section_id, semester, quarter)
+    try:
+        tbl = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='grades'").fetchone()
+        if tbl and 'semester, quarter' not in (tbl['sql'] or ''):
+            conn.executescript(
+                "ALTER TABLE grades RENAME TO grades_old;"
+                "CREATE TABLE grades ("
+                "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "    student_id INTEGER NOT NULL,"
+                "    subject_id INTEGER NOT NULL,"
+                "    section_id INTEGER NOT NULL,"
+                "    semester TEXT NOT NULL DEFAULT '',"
+                "    quarter TEXT NOT NULL CHECK(quarter IN ('Prelim','Midterm','Semi-Final','Final')),"
+                "    written_works REAL, performance_tasks REAL, quarterly_assessment REAL,"
+                "    midterm REAL, finals REAL,"
+                "    created_at TEXT DEFAULT (datetime('now')),"
+                "    updated_at TEXT DEFAULT (datetime('now')),"
+                "    UNIQUE(student_id, subject_id, section_id, semester, quarter),"
+                "    FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,"
+                "    FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE,"
+                "    FOREIGN KEY (section_id) REFERENCES sections(id) ON DELETE CASCADE"
+                ");"
+                "INSERT OR IGNORE INTO grades"
+                "    (student_id,subject_id,section_id,semester,quarter,"
+                "     written_works,performance_tasks,quarterly_assessment,midterm,finals,created_at,updated_at)"
+                "    SELECT student_id,subject_id,section_id,COALESCE(semester,''),quarter,"
+                "           written_works,performance_tasks,quarterly_assessment,midterm,finals,created_at,updated_at"
+                "    FROM grades_old;"
+                "DROP TABLE grades_old;"
+            )
+    except Exception:
+        pass
+
+    # Fix grade_submissions CHECK constraint to include 'Submitted' status
     # Fix grade_submissions CHECK constraint to include 'Submitted' status
     try:
         has_submitted = conn.execute(
@@ -365,12 +542,40 @@ def init_db():
     for s in students_no_pw:
         conn.execute("UPDATE students SET password=? WHERE id=?",
                      (hash_password(s['student_id']), s['id']))
+    # Migrate org_members: UNIQUE(org_id,student_id,school_year) -> UNIQUE(org_id,position_id,student_id)
+    try:
+        idx_info = conn.execute("PRAGMA index_list(org_members)").fetchall()
+        needs_mig = False
+        for idx in idx_info:
+            cols = {r["name"] for r in conn.execute("PRAGMA index_info(" + idx["name"] + ")")}
+            if cols == {"org_id", "student_id", "school_year"}:
+                needs_mig = True; break
+        if needs_mig:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("CREATE TABLE IF NOT EXISTS org_members_new (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, position_id INTEGER, student_id INTEGER NOT NULL, school_year TEXT, is_active INTEGER DEFAULT 1, UNIQUE(org_id, position_id, student_id), FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE, FOREIGN KEY (position_id) REFERENCES org_positions(id) ON DELETE SET NULL, FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)")
+            conn.execute("INSERT OR IGNORE INTO org_members_new SELECT id,org_id,position_id,student_id,school_year,is_active FROM org_members")
+            conn.execute("DROP TABLE org_members")
+            conn.execute("ALTER TABLE org_members_new RENAME TO org_members")
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.commit()
+    except Exception:
+        pass
+
     cur.execute("SELECT COUNT(*) FROM admins")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO admins (username,password,full_name) VALUES (?,?,?)",
                     ('admin', hash_password('admin123'), 'System Administrator'))
     conn.commit()
     conn.close()
+
+def any_role_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not ('admin_id' in session or 'teacher_id' in session or 'student_session_id' in session):
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated
+
 
 def login_required(f):
     @wraps(f)
@@ -443,10 +648,22 @@ def login():
             (username, hash_password(password))
         ).fetchone()
         if student:
+            # Check if this student is SSG Secretary General
+            ssg_org = conn.execute(
+                "SELECT o.id FROM organizations o WHERE o.org_type='government'"
+            ).fetchone()
+            is_secretary_general = False
+            if ssg_org:
+                is_secretary_general = bool(conn.execute(
+                    "SELECT 1 FROM org_members om JOIN org_positions op ON om.position_id=op.id"
+                    " WHERE om.org_id=? AND om.student_id=? AND op.position_name='Secretary General' AND om.is_active=1",
+                    (ssg_org['id'], student['id'])
+                ).fetchone())
             conn.close()
             session['student_session_id'] = student['id']
             session['student_name']       = student['first_name'] + ' ' + student['last_name']
             session['role']               = 'student'
+            session['is_secretary_general'] = is_secretary_general
             return redirect(url_for('student_dashboard'))
 
         conn.close()
@@ -749,6 +966,24 @@ def remove_subject_from_strand(stid, sid):
     flash('Subject removed from strand.', 'success')
     return redirect(url_for('strands'))
 
+@app.route('/api/all_students_basic')
+@any_role_required
+def api_all_students_basic():
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name"
+        " FROM students s WHERE s.enrollment_status='Enrolled'"
+        " ORDER BY s.last_name, s.first_name"
+    ).fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        mn = clean_middle_name(r['middle_name'] or '')
+        mi = f' {mn[0].upper()}.' if mn else ''
+        result.append({'id': r['id'], 'name': f"{r['last_name']}, {r['first_name']}{mi}", 'sid': r['student_id']})
+    return jsonify(result)
+
+
 @app.route('/api/all_subjects')
 @login_required
 def api_all_subjects():
@@ -809,7 +1044,7 @@ def add_section():
     conn = get_db()
     conn.execute(
         "INSERT INTO sections (grade_level,section_name,adviser_id,strand_id,student_limit) VALUES (?,?,?,?,?)",
-        (d['grade_level'], d['section_name'],
+        (normalize_grade_level(d['grade_level']) or d['grade_level'], d['section_name'],
          d.get('adviser_id') or None,
          d.get('strand_id') or None,
          int(d.get('student_limit') or 40))
@@ -825,7 +1060,7 @@ def edit_section(sec_id):
     conn = get_db()
     conn.execute(
         "UPDATE sections SET grade_level=?,section_name=?,adviser_id=?,strand_id=?,student_limit=? WHERE id=?",
-        (d['grade_level'], d['section_name'],
+        (normalize_grade_level(d['grade_level']) or d['grade_level'], d['section_name'],
          d.get('adviser_id') or None,
          d.get('strand_id') or None,
          int(d.get('student_limit') or 40),
@@ -1434,7 +1669,7 @@ def add_student():
             d.get('guardian_name','').strip() or None,
             d.get('guardian_contact','').strip() or None,
             d.get('section_id') or None, d.get('strand_id') or None,
-            d.get('grade_level','').strip() or None,
+            normalize_grade_level(d.get('grade_level','').strip()),
             d.get('enrollment_status','Enrolled')
         ))
         conn.commit()
@@ -1468,7 +1703,7 @@ def edit_student(sid):
             d.get('guardian_name','').strip() or None,
             d.get('guardian_contact','').strip() or None,
             d.get('section_id') or None, d.get('strand_id') or None,
-            d.get('grade_level','').strip() or None,
+            normalize_grade_level(d.get('grade_level','').strip()),
             d.get('enrollment_status','Enrolled'),
             sid
         ))
@@ -1566,14 +1801,63 @@ def get_student(sid):
     conn.close()
     return jsonify(dict(s)) if s else (jsonify({}), 404)
 
+BLANK_MIDDLE = {'-', '.', '-.', '.-', 'n/a', 'none', 'na', 'N/A', 'None', 'NA', '--', '---'}
+
+def clean_middle_name(val):
+    if not val:
+        return None
+    v = val.strip()
+    if not v or v in BLANK_MIDDLE or all(c in '.-' for c in v):
+        return None
+    return v
+
+def normalize_grade_level(raw):
+    import re
+    if not raw:
+        return None
+    val = raw.strip()
+    if val in ('Grade 7','Grade 8','Grade 9','Grade 10','Grade 11','Grade 12'):
+        return val
+    if val.isdigit() and val in ('7','8','9','10','11','12'):
+        return 'Grade ' + val
+    m = re.match(r'(?i)grade\s*(\d+)$', val)
+    if m and m.group(1) in ('7','8','9','10','11','12'):
+        return 'Grade ' + m.group(1)
+    return val or None
+
 @app.route('/students/bulk_add', methods=['POST'])
 @login_required
 def bulk_add_students():
     import csv, io
-    raw = request.form.get('csv_data', '').strip()
+    # Accept file upload OR raw csv_data textarea (backward compat)
+    file = request.files.get('csv_file')
+    if file and file.filename:
+        try:
+            raw_bytes = file.read()
+            # Try encodings in order: UTF-8 with BOM, plain UTF-8, Latin-1 (covers ñ, accents, etc.)
+            for enc in ('utf-8-sig', 'utf-8', 'latin-1', 'cp1252'):
+                try:
+                    raw = raw_bytes.decode(enc).strip()
+                    break
+                except (UnicodeDecodeError, LookupError):
+                    continue
+            else:
+                flash('Could not read file — unsupported encoding. Please save the CSV as UTF-8.', 'danger')
+                return redirect(url_for('students'))
+        except Exception as e:
+            flash(f'Could not read file: {e}', 'danger')
+            return redirect(url_for('students'))
+    else:
+        raw = request.form.get('csv_data', '').strip()
+
     if not raw:
         flash('No data provided.', 'danger')
         return redirect(url_for('students'))
+
+    # Default section — applied when a row has no section_name
+    default_section_id = request.form.get('default_section_id') or None
+    if default_section_id:
+        default_section_id = int(default_section_id)
 
     reader = csv.DictReader(io.StringIO(raw))
     conn   = get_db()
@@ -1583,52 +1867,95 @@ def bulk_add_students():
     strand_lookup = {}
     for r in conn.execute("SELECT id, strand_code FROM strands").fetchall():
         strand_lookup[r['strand_code'].upper()] = r['id']
+    section_lookup = {}
+    for r in conn.execute("SELECT id, section_name FROM sections").fetchall():
+        section_lookup[r['section_name'].strip().lower()] = r['id']
+
+    # Build in-memory sets for fast duplicate detection within the same import
+    seen_student_ids = set()
+    seen_names       = set()  # (fname_lower, mname_lower, lname_lower)
+
+    # Also load existing student_ids from DB for cross-import dedup
+    existing_ids = {r[0] for r in conn.execute("SELECT student_id FROM students").fetchall()}
 
     for i, row in enumerate(reader, start=2):
-        sid_val = (row.get('student_id') or '').strip()
-        fname   = (row.get('first_name') or '').strip()
-        lname   = (row.get('last_name')  or '').strip()
-        if not sid_val or not fname or not lname:
-            errors.append(f'Row {i}: student_id, first_name, last_name are required.')
+        sid_val  = (row.get('student_id')         or '').strip()
+        fname    = (row.get('first_name')          or '').strip()
+        mname    = clean_middle_name((row.get('middle_name') or '').strip()) or ''
+        lname    = (row.get('last_name')           or '').strip()
+        gender   = (row.get('gender')              or '').strip()
+        grade    = normalize_grade_level((row.get('grade_level') or '').strip())
+        status   = (row.get('enrollment_status')   or '').strip()
+        s_code   = (row.get('strand_code')         or '').strip()
+
+        missing = []
+        if not sid_val: missing.append('student_id')
+        if not fname:   missing.append('first_name')
+        if not mname:   missing.append('middle_name')
+        if not lname:   missing.append('last_name')
+        if not gender:  missing.append('gender')
+        if not grade:   missing.append('grade_level')
+        if not status:  missing.append('enrollment_status')
+        if not s_code:  missing.append('strand_code')
+        if missing:
+            errors.append(f'Row {i}: missing required field(s): {", ".join(missing)}')
             skipped += 1
             continue
 
+        # Duplicate student_id check (within this file)
+        if sid_val in seen_student_ids:
+            errors.append(f'Row {i}: duplicate student_id "{sid_val}" within this file — skipped.')
+            skipped += 1
+            continue
+        seen_student_ids.add(sid_val)
+
+        # Already in DB check
+        if sid_val in existing_ids:
+            errors.append(f'Row {i}: student_id "{sid_val}" already exists in the database — skipped.')
+            skipped += 1
+            continue
+
+        # Duplicate name check (within this file)
+        name_key = (fname.lower(), mname.lower(), lname.lower())
+        if name_key in seen_names:
+            errors.append(f'Row {i}: duplicate name "{fname} {mname} {lname}" within this file — skipped.')
+            skipped += 1
+            continue
+        seen_names.add(name_key)
+
         strand_id_val = None
-        raw_strand = (row.get('strand_id') or row.get('strand_code') or '').strip()
-        if raw_strand:
-            if raw_strand.isdigit():
-                strand_id_val = int(raw_strand)
+        if s_code:
+            if s_code.isdigit():
+                strand_id_val = int(s_code)
             else:
-                strand_id_val = strand_lookup.get(raw_strand.upper())
+                strand_id_val = strand_lookup.get(s_code.upper())
                 if strand_id_val is None:
-                    errors.append(f'Row {i}: strand "{raw_strand}" not found — skipping strand.')
+                    errors.append(f'Row {i}: strand "{s_code}" not found in database — skipping strand.')
 
         try:
             conn.execute("""
-                INSERT OR IGNORE INTO students
+                INSERT INTO students
                   (student_id, first_name, last_name, middle_name, gender, birthdate,
                    address, contact_no, email, guardian_name, guardian_contact,
-                   grade_level, enrollment_status, strand_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   grade_level, enrollment_status, strand_id, section_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 sid_val, fname, lname,
-                row.get('middle_name','').strip() or None,
-                row.get('gender','').strip() or None,
+                clean_middle_name(mname),
+                gender,
                 row.get('birthdate','').strip() or None,
                 row.get('address','').strip() or None,
                 row.get('contact_no','').strip() or None,
                 row.get('email','').strip() or None,
                 row.get('guardian_name','').strip() or None,
                 row.get('guardian_contact','').strip() or None,
-                row.get('grade_level','').strip() or None,
-                row.get('enrollment_status','Enrolled').strip() or 'Enrolled',
+                grade,
+                status or 'Enrolled',
                 strand_id_val,
+                section_lookup.get((row.get('section_name') or '').strip().lower()) or default_section_id,
             ))
-            if conn.execute("SELECT changes()").fetchone()[0]:
-                added += 1
-            else:
-                skipped += 1
-                errors.append(f'Row {i}: student_id "{sid_val}" already exists.')
+            added += 1
+            existing_ids.add(sid_val)  # track for rest of this import
         except Exception as e:
             skipped += 1
             errors.append(f'Row {i}: {e}')
@@ -1667,8 +1994,11 @@ def api_sections_by_strand():
     wheres, args = [], []
 
     if grade:
-        wheres.append("s.grade_level = ?")
-        args.append(grade)
+        # Match both "Grade 11" and bare "11"
+        grade_bare = grade.replace('Grade ', '').strip()
+        grade_full = 'Grade ' + grade_bare
+        wheres.append("(s.grade_level = ? OR s.grade_level = ?)")
+        args.extend([grade_full, grade_bare])
     if strand_id:
         wheres.append("s.strand_id = ?")
         args.append(strand_id)
@@ -1721,6 +2051,54 @@ def reset_all_student_passwords():
     flash(f'All {len(students)} student passwords reset to their Student ID.', 'success')
     return redirect(url_for('students'))
 
+@app.route('/students/export')
+@login_required
+def export_students():
+    import csv as _csv, io as _io
+    conn = get_db()
+    strand_id  = request.args.get('strand_id')
+    grade      = request.args.get('grade_level')
+    status     = request.args.get('enrollment_status')
+    section_id = request.args.get('section_id')
+    wheres, args = [], []
+    if strand_id:  wheres.append("s.strand_id=?");        args.append(strand_id)
+    if grade:      wheres.append("s.grade_level=?");      args.append(grade)
+    if status:     wheres.append("s.enrollment_status=?"); args.append(status)
+    if section_id: wheres.append("s.section_id=?");       args.append(section_id)
+    where_sql = ("WHERE " + " AND ".join(wheres)) if wheres else ""
+    rows = conn.execute(
+        "SELECT s.student_id, s.last_name, s.first_name, s.middle_name, "
+        "s.gender, s.birthdate, s.grade_level, s.enrollment_status, "
+        "s.contact_no, s.email, s.address, s.guardian_name, s.guardian_contact, "
+        "sec.section_name, st.strand_code "
+        "FROM students s "
+        "LEFT JOIN sections sec ON s.section_id=sec.id "
+        "LEFT JOIN strands st ON s.strand_id=st.id "
+        + where_sql + " ORDER BY s.grade_level, s.last_name, s.first_name",
+        args
+    ).fetchall()
+    conn.close()
+    out = _io.StringIO()
+    w = _csv.writer(out)
+    w.writerow(['student_id','last_name','first_name','middle_name',
+                'gender','birthdate','grade_level','enrollment_status',
+                'contact_no','email','address',
+                'guardian_name','guardian_contact',
+                'section_name','strand_code'])
+    for r in rows:
+        w.writerow([
+            r['student_id'], r['last_name'], r['first_name'], r['middle_name'] or '',
+            r['gender'] or '', r['birthdate'] or '',
+            r['grade_level'] or '', r['enrollment_status'] or 'Enrolled',
+            r['contact_no'] or '', r['email'] or '', r['address'] or '',
+            r['guardian_name'] or '', r['guardian_contact'] or '',
+            r['section_name'] or '', r['strand_code'] or ''
+        ])
+    resp = make_response(out.getvalue())
+    resp.headers['Content-Type']        = 'text/csv; charset=utf-8'
+    resp.headers['Content-Disposition'] = 'attachment; filename="students.csv"'
+    return resp
+
 @app.route('/students/auto_assign', methods=['POST'])
 @login_required
 def auto_assign_students():
@@ -1746,8 +2124,10 @@ def auto_assign_students():
         q += " AND strand_id = ?"
         q_args.append(strand_id)
     if grade:
-        q += " AND grade_level = ?"
-        q_args.append(grade)
+        grade_bare = str(grade).replace('Grade ', '').strip()
+        grade_full = 'Grade ' + grade_bare
+        q += " AND (grade_level = ? OR grade_level = ?)"
+        q_args.extend([grade_full, grade_bare])
 
     students_to_assign = conn.execute(q, q_args).fetchall()
 
@@ -1768,8 +2148,10 @@ def auto_assign_students():
     """
     sec_wheres = []
     if grade:
-        sec_wheres.append("s.grade_level = ?")
-        sec_q_args.append(grade)
+        grade_bare = str(grade).replace('Grade ', '').strip()
+        grade_full = 'Grade ' + grade_bare
+        sec_wheres.append("(s.grade_level = ? OR s.grade_level = ?)")
+        sec_q_args.extend([grade_full, grade_bare])
     if strand_id:
         sec_wheres.append("s.strand_id = ?")
         sec_q_args.append(strand_id)
@@ -1795,30 +2177,17 @@ def auto_assign_students():
                         'details': [],
                         'message': 'No sections with available slots found.'})
 
-    random.shuffle(section_slots)
+    # Sort sections by available slots descending for even fill
+    section_slots.sort(key=lambda s: s['available'], reverse=True)
 
     assigned_count = skipped_count = 0
     details = []
+    rr_idx = 0  # round-robin index
 
     for student in students_to_assign:
-        placed = False
-        for _ in range(len(section_slots)):
-            sec = section_slots[0]
-            section_slots.append(section_slots.pop(0))
-            if sec['available'] > 0:
-                conn.execute("UPDATE students SET section_id = ? WHERE id = ?", (sec['id'], student['id']))
-                sec['available'] -= 1
-                assigned_count += 1
-                details.append({
-                    'student_id': student['id'],
-                    'name':    f"{student['first_name']} {student['last_name']}",
-                    'status':  'assigned',
-                    'section': sec['name'],
-                })
-                placed = True
-                break
-
-        if not placed:
+        # Remove full sections
+        section_slots = [s for s in section_slots if s['available'] > 0]
+        if not section_slots:
             skipped_count += 1
             details.append({
                 'student_id': student['id'],
@@ -1826,6 +2195,22 @@ def auto_assign_students():
                 'status': 'skipped',
                 'reason': 'No available section slots'
             })
+            continue
+
+        # Round-robin: pick next section in rotation
+        rr_idx = rr_idx % len(section_slots)
+        sec = section_slots[rr_idx]
+        rr_idx += 1
+
+        conn.execute("UPDATE students SET section_id = ? WHERE id = ?", (sec['id'], student['id']))
+        sec['available'] -= 1
+        assigned_count += 1
+        details.append({
+            'student_id': student['id'],
+            'name':    f"{student['first_name']} {student['last_name']}",
+            'status':  'assigned',
+            'section': sec['name'],
+        })
 
     conn.commit()
     conn.close()
@@ -1875,26 +2260,58 @@ def compute_quarterly_grade(ww, pt, qa):
 
 def honor_classification(avg):
     if avg is None: return None
-    if avg >= 98:   return 'With Highest Honors'
-    if avg >= 95:   return 'With Honors'
-    if avg >= 90:   return 'Honors'
+    if avg >= 97.5:  return 'With Highest Honors'
+    if avg >= 94.5:  return 'With High Honors'
+    if avg >= 89.5:  return 'With Honors'
     return None
 
-def get_section_subjects(conn, section_id):
-    """Distinct subjects scheduled for this section.
-    Uses schedule-level semester (sc.semester) as the effective semester for this section,
-    falling back to subject-level semester. This handles subjects like Research Methods
-    that appear in 1st Sem for some sections and 2nd Sem for others.
+def get_section_subjects(conn, section_id, active_sem=None):
+    """Distinct subjects scheduled for this section, with teacher name(s).
+    For Whole Year subjects, shows only the teacher assigned to active_sem.
+    For regular subjects, shows all teachers for that subject.
     """
-    return conn.execute("""
+    rows = conn.execute("""
         SELECT sub.id, sub.subject_name, sub.subject_code,
-               COALESCE(MAX(sc.semester), sub.semester) AS semester
+               COALESCE(NULLIF(sub.semester,''), sc.semester) AS semester,
+               sc.semester AS sched_semester,
+               t.first_name || ' ' || t.last_name AS teacher_name,
+               t.id AS teacher_id
         FROM schedules sc
         JOIN subjects sub ON sc.subject_id = sub.id
+        JOIN teachers t   ON sc.teacher_id = t.id
         WHERE sc.section_id = ?
-        GROUP BY sub.id
-        ORDER BY sub.subject_name
+        ORDER BY sub.subject_name, sc.semester, t.last_name
     """, (section_id,)).fetchall()
+
+    from collections import OrderedDict
+    subjects = OrderedDict()
+    for r in rows:
+        sid = r['id']
+        if sid not in subjects:
+            subjects[sid] = {
+                'id':           sid,
+                'subject_name': r['subject_name'],
+                'subject_code': r['subject_code'],
+                'semester':     r['semester'] or '',
+                'teachers':     [],
+                '_seen_teachers': set(),
+            }
+        sub = subjects[sid]
+        # For Whole Year subjects: only include teacher if their schedule
+        # matches the active semester (or if no active_sem filter set)
+        is_wy = (sub['semester'] == 'Whole Year')
+        sched_sem = r['sched_semester'] or ''
+        if is_wy and active_sem and sched_sem and sched_sem != active_sem:
+            continue  # skip this teacher — wrong semester
+        if r['teacher_id'] not in sub['_seen_teachers']:
+            sub['_seen_teachers'].add(r['teacher_id'])
+            sub['teachers'].append(r['teacher_name'])
+
+    result = []
+    for s in subjects.values():
+        del s['_seen_teachers']
+        result.append(s)
+    return result
 
 # ── Grades home: list sections ──
 @app.route('/grades/open_period', methods=['POST'])
@@ -2034,7 +2451,6 @@ def grade_sheet(sec_id):
         flash('Section not found.', 'danger')
         return redirect(url_for('grades_home'))
 
-    subjects_all = get_section_subjects(conn, sec_id)
     students     = conn.execute(
         "SELECT id, student_id, first_name, last_name, middle_name FROM students WHERE section_id=? ORDER BY last_name, first_name",
         (sec_id,)
@@ -2043,6 +2459,7 @@ def grade_sheet(sec_id):
     active_sem = request.args.get('sem', '1st Semester')
     if active_sem not in ('1st Semester', '2nd Semester'):
         active_sem = '1st Semester'
+    subjects_all = get_section_subjects(conn, sec_id, active_sem)
     subjects = subjects_for_sem_tab(subjects_all, active_sem)
 
     sel_sub_id  = request.args.get('subject_id', type=int)
@@ -2050,10 +2467,21 @@ def grade_sheet(sec_id):
         sel_sub_id = subjects[0]['id']
     sel_subject = next((s for s in subjects if s['id'] == sel_sub_id), None)
 
-    QUARTERS   = ALL_PERIODS
+    # Determine which quarters apply to the selected subject in this semester
+    if sel_subject:
+        sub_sem = sel_subject['semester'] if sel_subject['semester'] in ('1st Semester','2nd Semester') else active_sem
+        sem_q_rows = conn.execute(
+            "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id",
+            (sub_sem,)
+        ).fetchall()
+        QUARTERS = [r['period'] for r in sem_q_rows] if sem_q_rows else ALL_PERIODS
+    else:
+        QUARTERS = ALL_PERIODS
     grades_raw = conn.execute(
-        "SELECT g.student_id, g.quarter, g.written_works, g.performance_tasks, g.quarterly_assessment FROM grades g WHERE g.section_id=? AND g.subject_id=?",
-        (sec_id, sel_sub_id or 0)
+        "SELECT g.student_id, g.quarter, g.written_works, g.performance_tasks, g.quarterly_assessment FROM grades g WHERE g.section_id=? AND g.subject_id=? AND g.semester=?",
+        (sec_id, sel_sub_id or 0,
+         active_sem if (not sel_subject or sel_subject['semester'] in ('', 'Whole Year'))
+         else sel_subject['semester'])
     ).fetchall() if sel_sub_id else []
 
     grade_map = {}
@@ -2078,9 +2506,10 @@ def grade_sheet(sec_id):
 
     sub_statuses = {}
     if sel_sub_id:
+        gs_sem = active_sem if (not sel_subject or sel_subject['semester'] in ('', 'Whole Year')) else sel_subject['semester']
         rows = conn.execute(
-            "SELECT quarter, status FROM grade_submissions WHERE subject_id=? AND section_id=?",
-            (sel_sub_id, sec_id)
+            "SELECT quarter, status FROM grade_submissions WHERE subject_id=? AND section_id=? AND semester=?",
+            (sel_sub_id, sec_id, gs_sem)
         ).fetchall()
         sub_statuses = {r['quarter']: r['status'] for r in rows}
 
@@ -2090,6 +2519,135 @@ def grade_sheet(sec_id):
                            active_sem=active_sem, sel_subject=sel_subject, sel_sub_id=sel_sub_id,
                            students=student_grades, quarters=QUARTERS,
                            q_statuses=sub_statuses, passing_grade=PASSING_GRADE)
+
+
+@app.route('/debug/grades/<int:sec_id>')
+@login_required
+def debug_grades(sec_id):
+    conn = get_db()
+    # All grade rows with full context
+    rows = conn.execute("""
+        SELECT s.student_id AS sid, s.first_name, s.last_name,
+               sub.subject_name, sub.subject_code,
+               sub.semester AS sub_sem,
+               sc.semester AS sched_sem,
+               g.semester AS stored_sem,
+               g.quarter,
+               g.written_works AS ww,
+               g.performance_tasks AS pt,
+               g.quarterly_assessment AS qa
+        FROM grades g
+        JOIN students s   ON g.student_id  = s.id
+        JOIN subjects sub ON g.subject_id  = sub.id
+        LEFT JOIN schedules sc ON sc.subject_id = g.subject_id
+                               AND sc.section_id = g.section_id
+        WHERE g.section_id=?
+        GROUP BY g.id
+        ORDER BY s.last_name, sub.subject_name, g.semester, g.quarter
+    """, (sec_id,)).fetchall()
+
+    # Summary: grades with semester=''
+    empty_sem = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM grades WHERE section_id=? AND semester=''", (sec_id,)
+    ).fetchone()['cnt']
+
+    conn.close()
+    return jsonify({
+        'empty_semester_count': empty_sem,
+        'rows': [dict(r) for r in rows]
+    })
+
+@app.route('/grades/section/<int:sec_id>/summary')
+@login_required
+def grade_summary(sec_id):
+    conn = get_db()
+    section = conn.execute(
+        "SELECT s.*, st.strand_code FROM sections s LEFT JOIN strands st ON s.strand_id=st.id WHERE s.id=?",
+        (sec_id,)
+    ).fetchone()
+    if not section:
+        flash('Section not found.', 'danger')
+        conn.close()
+        return redirect(url_for('grades_home'))
+
+    active_sem = request.args.get('sem', '1st Semester')
+    if active_sem not in ('1st Semester', '2nd Semester'):
+        active_sem = '1st Semester'
+
+    subjects = get_section_subjects(conn, sec_id, active_sem)
+    subjects  = subjects_for_sem_tab(subjects, active_sem)
+
+    students = conn.execute(
+        "SELECT id, student_id, first_name, last_name, middle_name FROM students "
+        "WHERE section_id=? ORDER BY last_name, first_name",
+        (sec_id,)
+    ).fetchall()
+
+    # Fetch all grades for this section
+    all_grades = conn.execute(
+        "SELECT student_id, subject_id, semester, quarter, written_works, performance_tasks, quarterly_assessment "
+        "FROM grades WHERE section_id=?",
+        (sec_id,)
+    ).fetchall()
+
+    # Quarters that belong to each semester (from grading_period_settings)
+    sem_quarters_rows = conn.execute(
+        "SELECT period, semester FROM grading_period_settings ORDER BY id"
+    ).fetchall()
+    sem_quarters_map = {}
+    for r in sem_quarters_rows:
+        sem_quarters_map.setdefault(r['semester'], [])
+        if r['period'] not in sem_quarters_map[r['semester']]:
+            sem_quarters_map[r['semester']].append(r['period'])
+
+    conn.close()
+
+    # grade_map[student_id][(subject_id,semester)][quarter] = computed_grade
+    grade_map = {}
+    for g in all_grades:
+        qg = compute_quarterly_grade(g['written_works'], g['performance_tasks'], g['quarterly_assessment'])
+        key = (g['subject_id'], g['semester'] or '')
+        grade_map.setdefault(g['student_id'], {}).setdefault(key, {})[g['quarter']] = qg
+
+    # Build rows: one per student
+    rows = []
+    for st in students:
+        sub_grades = {}
+        gen_vals   = []
+        for sub in subjects:
+            # Determine effective semester for this subject's grades
+            if sub['semester'] in ('1st Semester', '2nd Semester'):
+                eff_sem     = sub['semester']
+                relevant_qs = sem_quarters_map.get(eff_sem, ALL_PERIODS)
+            else:
+                eff_sem     = active_sem
+                relevant_qs = sem_quarters_map.get(active_sem, ALL_PERIODS)
+            grade_key = (sub['id'], eff_sem)
+            q_vals = [
+                grade_map.get(st['id'], {}).get(grade_key, {}).get(q)
+                for q in relevant_qs
+            ]
+            q_vals = [v for v in q_vals if v is not None]
+            avg = round(sum(q_vals) / len(q_vals), 2) if q_vals else None
+            if avg is not None:
+                gen_vals.append(avg)
+            sub_grades[sub['id']] = {
+                'avg':     avg,
+                'passing': avg is not None and avg >= PASSING_GRADE,
+            }
+        gen_avg = round(sum(gen_vals) / len(gen_vals), 2) if gen_vals else None
+        rows.append({
+            'student':    dict(st),
+            'sub_grades': sub_grades,
+            'gen_avg':    gen_avg,
+            'passing':    gen_avg is not None and gen_avg >= PASSING_GRADE,
+        })
+
+    return render_template('grade_summary.html',
+                           section=section, subjects=subjects,
+                           rows=rows, active_sem=active_sem,
+                           passing_grade=PASSING_GRADE)
+
 
 @app.route('/grades/section/<int:sec_id>/clear', methods=['POST'])
 @login_required
@@ -2103,17 +2661,23 @@ def clear_grades(sec_id):
 
     conn = get_db()
     # Only clear Draft periods — cannot clear Approved/Locked
-    sub_row = conn.execute(
-        "SELECT status FROM grade_submissions WHERE subject_id=? AND section_id=? AND quarter=?",
-        (sub_id, sec_id, period)
-    ).fetchone()
-    status = sub_row['status'] if sub_row else 'Draft'
+    sem_for_clear = request.form.get('semester', '').strip()
+    if not sem_for_clear:
+        sem_for_clear = get_effective_semester(conn, sub_id, sec_id)
+    status = get_submission_status(conn, sub_id, sec_id, period, sem_for_clear)
     if status in ('Approved', 'Locked'):
         conn.close()
         return jsonify({'ok': False, 'error': f'{period} is {status} and cannot be cleared.'}), 400
 
+    sem = sem_for_clear
+    # Delete for the given semester AND any legacy rows with semester=''
     conn.execute(
-        "DELETE FROM grades WHERE subject_id=? AND section_id=? AND quarter=?",
+        "DELETE FROM grades WHERE subject_id=? AND section_id=? AND semester=? AND quarter=?",
+        (sub_id, sec_id, sem, period)
+    )
+    # Also clear legacy empty-semester rows for this subject/period
+    conn.execute(
+        "DELETE FROM grades WHERE subject_id=? AND section_id=? AND semester='' AND quarter=?",
         (sub_id, sec_id, period)
     )
     conn.commit()
@@ -2171,6 +2735,7 @@ def save_grade_cell():
     student_id = d.get('student_id')
     subject_id = d.get('subject_id')
     section_id = d.get('section_id')
+    semester   = d.get('semester') or ''
     quarter    = d.get('quarter')
     component  = d.get('component')
     value      = d.get('value')
@@ -2186,11 +2751,7 @@ def save_grade_cell():
     conn = get_db()
 
     # Block edits if Approved or Locked
-    sub_row = conn.execute(
-        "SELECT status FROM grade_submissions WHERE subject_id=? AND section_id=? AND quarter=?",
-        (subject_id, section_id, quarter)
-    ).fetchone()
-    status = sub_row['status'] if sub_row else 'Draft'
+    status = get_submission_status(conn, subject_id, section_id, quarter, semester)
 
     if status in ('Approved', 'Locked'):
         conn.close()
@@ -2199,7 +2760,8 @@ def save_grade_cell():
     # Block teacher edits if grading period is not open
     if 'teacher_id' in session and 'admin_id' not in session:
         period_row = conn.execute(
-            "SELECT is_open FROM grading_period_settings WHERE period=?", (quarter,)
+            "SELECT is_open FROM grading_period_settings WHERE period=? AND semester=?",
+            (quarter, semester or '1st Semester')
         ).fetchone()
         if not period_row or not period_row['is_open']:
             conn.close()
@@ -2207,8 +2769,8 @@ def save_grade_cell():
 
     # Log admin edits — require a reason if value is changing
     old_row = conn.execute(
-        "SELECT " + component + " FROM grades WHERE student_id=? AND subject_id=? AND section_id=? AND quarter=?",
-        (student_id, subject_id, section_id, quarter)
+        "SELECT " + component + " FROM grades WHERE student_id=? AND subject_id=? AND section_id=? AND semester=? AND quarter=?",
+        (student_id, subject_id, section_id, semester, quarter)
     ).fetchone()
     old_value = old_row[component] if old_row else None
 
@@ -2226,28 +2788,28 @@ def save_grade_cell():
             )
 
     existing = conn.execute(
-        "SELECT id FROM grades WHERE student_id=? AND subject_id=? AND section_id=? AND quarter=?",
-        (student_id, subject_id, section_id, quarter)
+        "SELECT id FROM grades WHERE student_id=? AND subject_id=? AND section_id=? AND semester=? AND quarter=?",
+        (student_id, subject_id, section_id, semester, quarter)
     ).fetchone()
 
     if existing:
         conn.execute(
-            "UPDATE grades SET " + component + "=?, updated_at=datetime('now') WHERE student_id=? AND subject_id=? AND section_id=? AND quarter=?",
-            (value, student_id, subject_id, section_id, quarter)
+            "UPDATE grades SET " + component + "=?, updated_at=datetime('now') WHERE student_id=? AND subject_id=? AND section_id=? AND semester=? AND quarter=?",
+            (value, student_id, subject_id, section_id, semester, quarter)
         )
     else:
         kw = {c: None for c in ALLOWED}
         kw[component] = value
         conn.execute(
-            "INSERT INTO grades (student_id,subject_id,section_id,quarter,written_works,performance_tasks,quarterly_assessment,midterm,finals) VALUES (?,?,?,?,?,?,?,?,?)",
-            (student_id, subject_id, section_id, quarter,
+            "INSERT INTO grades (student_id,subject_id,section_id,semester,quarter,written_works,performance_tasks,quarterly_assessment,midterm,finals) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (student_id, subject_id, section_id, semester, quarter,
              kw['written_works'], kw['performance_tasks'], kw['quarterly_assessment'],
              kw['midterm'], kw['finals'])
         )
 
     row = conn.execute(
-        "SELECT written_works,performance_tasks,quarterly_assessment FROM grades WHERE student_id=? AND subject_id=? AND section_id=? AND quarter=?",
-        (student_id, subject_id, section_id, quarter)
+        "SELECT written_works,performance_tasks,quarterly_assessment FROM grades WHERE student_id=? AND subject_id=? AND section_id=? AND semester=? AND quarter=?",
+        (student_id, subject_id, section_id, semester, quarter)
     ).fetchone()
     computed = compute_quarterly_grade(row['written_works'], row['performance_tasks'], row['quarterly_assessment']) if row else None
     conn.commit()
@@ -2280,20 +2842,20 @@ def student_profile(student_id):
     sub_statuses = {}
     if student['sec_id']:
         rows = conn.execute(
-            "SELECT subject_id, quarter, status FROM grade_submissions WHERE section_id=?",
+            "SELECT subject_id, semester, quarter, status FROM grade_submissions WHERE section_id=?",
             (student['sec_id'],)
         ).fetchall()
         for r in rows:
-            sub_statuses.setdefault(r['subject_id'], {})[r['quarter']] = r['status']
+            sub_statuses[(r['subject_id'], r['semester'] or '', r['quarter'])] = r['status']
 
     grades_raw = conn.execute("""
-        SELECT g.subject_id, g.quarter,
+        SELECT g.subject_id, g.semester, g.quarter,
                g.written_works, g.performance_tasks, g.quarterly_assessment
         FROM grades g WHERE g.student_id=?
     """, (student_id,)).fetchall()
     grade_map = {}
     for g in grades_raw:
-        grade_map.setdefault(g['subject_id'], {})[g['quarter']] = g
+        grade_map.setdefault(g['subject_id'], {}).setdefault(g['semester'] or '', {})[g['quarter']] = g
 
     QUARTERS = ['Prelim', 'Midterm', 'Semi-Final', 'Final']
     subject_rows = []
@@ -2304,9 +2866,10 @@ def student_profile(student_id):
     for sub in subjects:
         qgrades = {}
         has_any_grade = False
+        sub_eff_sem = sub['semester'] if sub['semester'] in ('1st Semester','2nd Semester') else '1st Semester'
         for q in QUARTERS:
-            row    = grade_map.get(sub['id'], {}).get(q)
-            status = sub_statuses.get(sub['id'], {}).get(q, 'Draft')
+            row    = grade_map.get(sub['id'], {}).get(sub_eff_sem, {}).get(q)
+            status = sub_statuses.get((sub['id'], sub_eff_sem, q), 'Draft')
             if row:
                 qg = compute_quarterly_grade(row['written_works'], row['performance_tasks'], row['quarterly_assessment'])
                 has_any_grade = True
@@ -2396,8 +2959,8 @@ def teacher_profile(teacher_id):
             "SELECT COUNT(*) FROM students WHERE section_id=?", (row['section_id'],)
         ).fetchone()[0]
         encoded = conn.execute(
-            "SELECT COUNT(DISTINCT quarter) FROM grade_submissions WHERE subject_id=? AND section_id=? AND status IN ('Approved','Locked')",
-            (row['subject_id'], row['section_id'])
+            "SELECT COUNT(DISTINCT quarter) FROM grade_submissions WHERE subject_id=? AND section_id=? AND status IN ('Approved','Locked') AND semester=?",
+            (row['subject_id'], row['section_id'], get_effective_semester(conn, row['subject_id'], row['section_id']))
         ).fetchone()[0]
         encoding_progress.append({
             'subject_name': row['subject_name'], 'section_name': row['section_name'],
@@ -2417,7 +2980,7 @@ def teacher_profile(teacher_id):
 def report_card(student_id):
     conn    = get_db()
     student = conn.execute("""
-        SELECT s.*, sec.section_name, sec.grade_level, st.strand_code
+        SELECT s.*, sec.section_name, sec.grade_level AS sec_grade, st.strand_code
         FROM students s
         LEFT JOIN sections sec ON s.section_id = sec.id
         LEFT JOIN strands st   ON s.strand_id  = st.id
@@ -2427,72 +2990,88 @@ def report_card(student_id):
         flash('Student not found.', 'danger')
         return redirect(url_for('grades_home'))
 
-    subjects = get_section_subjects(conn, student['section_id']) if student['section_id'] else []
+    sec_id   = student['section_id']
+    QUARTERS = ALL_PERIODS
 
-    QUARTERS = ['Prelim','Midterm','Semi-Final','Final']
-
-    # Submission statuses
-    sub_statuses = {}
-    if student['section_id']:
+    # Get quarters per semester from settings
+    sem_q_map = {}
+    for sem in ('1st Semester', '2nd Semester'):
         rows = conn.execute(
-            "SELECT subject_id, quarter, status FROM grade_submissions WHERE section_id=?",
-            (student['section_id'],)
+            "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id", (sem,)
+        ).fetchall()
+        sem_q_map[sem] = [r['period'] for r in rows] if rows else QUARTERS
+
+    # Submission statuses: (subject_id, semester, quarter) -> status
+    sub_statuses = {}
+    if sec_id:
+        rows = conn.execute(
+            "SELECT subject_id, semester, quarter, status FROM grade_submissions WHERE section_id=?",
+            (sec_id,)
         ).fetchall()
         for r in rows:
-            sub_statuses.setdefault(r['subject_id'], {})[r['quarter']] = r['status']
+            sub_statuses[(r['subject_id'], r['semester'] or '', r['quarter'])] = r['status']
 
+    # All grades for this student with semester
     grades_raw = conn.execute("""
-        SELECT g.subject_id, g.quarter,
-               g.written_works, g.performance_tasks, g.quarterly_assessment,
-               g.midterm, g.finals
+        SELECT g.subject_id, g.semester, g.quarter,
+               g.written_works, g.performance_tasks, g.quarterly_assessment
         FROM grades g WHERE g.student_id=?
     """, (student_id,)).fetchall()
 
+    # grade_map[subject_id][semester][quarter] = row
     grade_map = {}
     for g in grades_raw:
-        grade_map.setdefault(g['subject_id'], {})[g['quarter']] = g
+        grade_map.setdefault(g['subject_id'], {}).setdefault(g['semester'] or '', {})[g['quarter']] = g
 
-    subject_rows = []
-    all_approved_qg = []
-    for sub in subjects:
-        qgrades = {}
-        has_any = False
-        for q in QUARTERS:
-            row    = grade_map.get(sub['id'], {}).get(q)
-            status = sub_statuses.get(sub['id'], {}).get(q, 'Draft')
-            if row:
-                qg = compute_quarterly_grade(row['written_works'], row['performance_tasks'], row['quarterly_assessment'])
-                has_any = True
-            else:
-                qg = None
-            visible = status in ('Approved', 'Locked')
-            qgrades[q] = {'grade': qg if visible else None,
-                          'status': status, 'has_data': qg is not None, 'visible': visible}
-            if visible and qg is not None:
-                all_approved_qg.append(qg)
+    def build_sem_rows(subjects, active_sem):
+        rows_out = []
+        sub_avgs = []
+        for sub in subjects:
+            eff_sem = active_sem if sub['semester'] in ('', 'Whole Year') else sub['semester']
+            quarters = sem_q_map.get(eff_sem, QUARTERS)
+            qgrades  = {}
+            for q in quarters:
+                row    = grade_map.get(sub['id'], {}).get(eff_sem, {}).get(q)
+                status = sub_statuses.get((sub['id'], eff_sem, q), 'Draft')
+                qg     = compute_quarterly_grade(
+                    row['written_works'], row['performance_tasks'], row['quarterly_assessment']
+                ) if row else None
+                visible = status in ('Approved', 'Locked')
+                qgrades[q] = {
+                    'grade':    qg if visible else None,
+                    'status':   status,
+                    'has_data': qg is not None,
+                    'visible':  visible,
+                }
+            visible_grades = [qgrades[q]['grade'] for q in quarters if qgrades[q]['grade'] is not None]
+            sub_avg = round(sum(visible_grades) / len(visible_grades), 2) if visible_grades else None
+            if sub_avg is not None:
+                sub_avgs.append(sub_avg)
+            rows_out.append({
+                'subject': sub, 'quarters': qgrades, 'quarter_list': quarters,
+                'average': sub_avg,
+                'passing': sub_avg is not None and sub_avg >= PASSING_GRADE,
+            })
+        sem_avg = round(sum(sub_avgs) / len(sub_avgs), 2) if sub_avgs else None
+        return rows_out, sem_avg
 
-        # Midterm avg = Q1+Q2 approved average
-        q1g = qgrades['Prelim']['grade']; q2g = qgrades['Midterm']['grade']
-        midterm_avg = round((q1g + q2g) / 2, 2) if q1g is not None and q2g is not None else None
+    # Build per-semester subject rows
+    sem_data = {}
+    for sem in ('1st Semester', '2nd Semester'):
+        subs = get_section_subjects(conn, sec_id, sem) if sec_id else []
+        subs = subjects_for_sem_tab(subs, sem)
+        rows_out, sem_avg = build_sem_rows(subs, sem)
+        sem_data[sem] = {'rows': rows_out, 'avg': sem_avg}
 
-        # Finals avg = Q3+Q4 approved average
-        q3g = qgrades['Semi-Final']['grade']; q4g = qgrades['Final']['grade']
-        finals_avg  = round((q3g + q4g) / 2, 2) if q3g is not None and q4g is not None else None
+    # General average across both semesters
+    all_avgs = [v for sem in sem_data.values() for v in [sem['avg']] if v is not None]
+    general_avg = round(sum(all_avgs) / len(all_avgs), 2) if all_avgs else None
+    honor = honor_classification(general_avg)
 
-        visible_grades = [qgrades[q]['grade'] for q in QUARTERS if qgrades[q]['grade'] is not None]
-        sub_avg = round(sum(visible_grades)/len(visible_grades), 2) if visible_grades else None
-        subject_rows.append({
-            'subject': sub, 'quarters': qgrades,
-            'midterm_avg': midterm_avg, 'finals_avg': finals_avg,
-            'average': sub_avg, 'has_any': has_any,
-            'passing': sub_avg is not None and sub_avg >= PASSING_GRADE
-        })
-
-    general_avg = round(sum(all_q_grades)/len(all_q_grades), 2) if all_q_grades else None
-    honor       = honor_classification(general_avg)
     conn.close()
-    return render_template('report_card.html', student=student, subject_rows=subject_rows,
-                           quarters=QUARTERS, general_avg=general_avg, honor=honor,
+    return render_template('report_card.html', student=student,
+                           sem_data=sem_data, quarters=QUARTERS,
+                           general_avg=general_avg, honor=honor,
                            passing_grade=PASSING_GRADE)
 
 # ── Honor roll: per section ──
@@ -2500,12 +3079,23 @@ def report_card(student_id):
 @login_required
 def honor_roll():
     conn = get_db()
-    sec_id = request.args.get('section_id', type=int)
+    sec_id     = request.args.get('section_id', type=int)
+    active_sem = request.args.get('sem', '1st Semester')
+    if active_sem not in ('1st Semester', '2nd Semester'):
+        active_sem = '1st Semester'
+
     sections_list = conn.execute("""
         SELECT s.id, s.section_name, s.grade_level, st.strand_code
         FROM sections s LEFT JOIN strands st ON s.strand_id=st.id
         ORDER BY s.grade_level, s.section_name
     """).fetchall()
+
+    # Get quarters that belong to this semester
+    sem_q_rows = conn.execute(
+        "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id",
+        (active_sem,)
+    ).fetchall()
+    sem_quarters = [r['period'] for r in sem_q_rows] if sem_q_rows else ALL_PERIODS
 
     honorees = []
     if sec_id:
@@ -2514,19 +3104,66 @@ def honor_roll():
             FROM students WHERE section_id=? ORDER BY last_name, first_name
         """, (sec_id,)).fetchall()
 
-        for st in students:
-            grades_raw = conn.execute("""
-                SELECT g.quarter, g.written_works, g.performance_tasks, g.quarterly_assessment
-                FROM grades g WHERE g.student_id=?
-            """, (st['id'],)).fetchall()
-            all_qg = []
-            for g in grades_raw:
-                qg = compute_quarterly_grade(g['written_works'], g['performance_tasks'], g['quarterly_assessment'])
-                if qg is not None: all_qg.append(qg)
-            avg   = round(sum(all_qg)/len(all_qg), 2) if all_qg else None
-            honor = honor_classification(avg)
-            if honor:
-                honorees.append({'student': st, 'avg': avg, 'honor': honor})
+        # Get subjects for this semester — strictly scoped
+        # For honor roll: N/A subjects treated as 1st Semester only
+        subjects_all_hr = get_section_subjects(conn, sec_id, active_sem)
+        subjects = [s for s in subjects_all_hr
+                    if s['semester'] == active_sem
+                    or s['semester'] == 'Whole Year'
+                    or (s['semester'] in ('', None) and active_sem == '1st Semester')]
+        sub_ids  = [s['id'] for s in subjects]
+
+        if sub_ids:
+            # Only use Approved/Locked grades for honor roll — scoped to active semester
+            sub_statuses_hr = {}
+            qs_rows = conn.execute(
+                "SELECT subject_id, quarter, status FROM grade_submissions WHERE section_id=? AND semester=?",
+                (sec_id, active_sem)
+            ).fetchall()
+            for r in qs_rows:
+                sub_statuses_hr.setdefault(r['subject_id'], {})[r['quarter']] = r['status']
+            # Also include legacy empty-semester rows
+            qs_rows2 = conn.execute(
+                "SELECT subject_id, quarter, status FROM grade_submissions WHERE section_id=? AND semester=''",
+                (sec_id,)
+            ).fetchall()
+            for r in qs_rows2:
+                sub_statuses_hr.setdefault(r['subject_id'], {}).setdefault(r['quarter'], r['status'])
+
+            for st in students:
+                sub_avgs = []
+                all_subjects_have_grades = True
+                for sub in subjects:
+                    eff_sem = get_effective_semester(conn, sub['id'], sec_id, active_sem)
+                    placeholders = ','.join('?'*len(sem_quarters))
+                    grades_raw = conn.execute(
+                        f"SELECT g.quarter, g.written_works, g.performance_tasks, g.quarterly_assessment "
+                        f"FROM grades g "
+                        f"WHERE g.student_id=? AND g.subject_id=? AND g.section_id=? "
+                        f"AND g.semester=? "
+                        f"AND g.quarter IN ({placeholders})",
+                        [st['id'], sub['id'], sec_id, eff_sem] + sem_quarters
+                    ).fetchall()
+                    # Only count grades from Approved or Locked quarters
+                    qvals = []
+                    for g in grades_raw:
+                        status = sub_statuses_hr.get(sub['id'], {}).get(g['quarter'], 'Draft')
+                        if status not in ('Approved', 'Locked'):
+                            continue
+                        qg = compute_quarterly_grade(g['written_works'], g['performance_tasks'], g['quarterly_assessment'])
+                        if qg is not None:
+                            qvals.append(qg)
+                    if qvals:
+                        sub_avgs.append(round(sum(qvals)/len(qvals), 2))
+                    else:
+                        all_subjects_have_grades = False
+
+                if not sub_avgs:
+                    continue
+                avg   = round(sum(sub_avgs)/len(sub_avgs), 2)
+                honor = honor_classification(avg)
+                if honor:
+                    honorees.append({'student': st, 'avg': avg, 'honor': honor})
 
         honorees.sort(key=lambda x: x['avg'], reverse=True)
         for i, h in enumerate(honorees, 1):
@@ -2535,7 +3172,7 @@ def honor_roll():
     conn.close()
     sel_section = next((s for s in sections_list if s['id'] == sec_id), None)
     return render_template('honor_roll.html', sections=sections_list, honorees=honorees,
-                           sel_section=sel_section, sec_id=sec_id)
+                           sel_section=sel_section, sec_id=sec_id, active_sem=active_sem)
 
 # ── Grade summary per teacher ──
 @app.route('/grades/teacher_summary')
@@ -2597,44 +3234,51 @@ def grade_teacher_summary():
 
 # ── GRADE APPROVAL ──────────────────────────────────────────────
 
-def get_submission_status(conn, subject_id, section_id, quarter):
+def get_submission_status(conn, subject_id, section_id, quarter, semester=''):
     row = conn.execute(
-        "SELECT status FROM grade_submissions WHERE subject_id=? AND section_id=? AND quarter=?",
+        "SELECT status FROM grade_submissions WHERE subject_id=? AND section_id=? AND semester=? AND quarter=?",
+        (subject_id, section_id, semester, quarter)
+    ).fetchone()
+    if row:
+        return row['status']
+    # Fallback: check without semester for legacy rows
+    row2 = conn.execute(
+        "SELECT status FROM grade_submissions WHERE subject_id=? AND section_id=? AND quarter=? AND semester=''",
         (subject_id, section_id, quarter)
     ).fetchone()
-    return row['status'] if row else 'Draft'
+    return row2['status'] if row2 else 'Draft'
 
 def upsert_submission(conn, subject_id, section_id, quarter, status,
-                      approved_by=None, unlock_reason=None):
+                      approved_by=None, unlock_reason=None, semester=''):
     existing = conn.execute(
-        "SELECT id FROM grade_submissions WHERE subject_id=? AND section_id=? AND quarter=?",
-        (subject_id, section_id, quarter)
+        "SELECT id FROM grade_submissions WHERE subject_id=? AND section_id=? AND semester=? AND quarter=?",
+        (subject_id, section_id, semester, quarter)
     ).fetchone()
     if existing:
         if status == 'Approved':
             conn.execute(
-                "UPDATE grade_submissions SET status=?, approved_at=datetime('now'), approved_by=?, updated_at=datetime('now') WHERE subject_id=? AND section_id=? AND quarter=?",
-                (status, approved_by, subject_id, section_id, quarter)
+                "UPDATE grade_submissions SET status=?, approved_at=datetime('now'), approved_by=?, updated_at=datetime('now') WHERE subject_id=? AND section_id=? AND semester=? AND quarter=?",
+                (status, approved_by, subject_id, section_id, semester, quarter)
             )
         elif status == 'Locked':
             conn.execute(
-                "UPDATE grade_submissions SET status=?, locked_at=datetime('now'), updated_at=datetime('now') WHERE subject_id=? AND section_id=? AND quarter=?",
-                (status, subject_id, section_id, quarter)
+                "UPDATE grade_submissions SET status=?, locked_at=datetime('now'), updated_at=datetime('now') WHERE subject_id=? AND section_id=? AND semester=? AND quarter=?",
+                (status, subject_id, section_id, semester, quarter)
             )
         elif status == 'Draft':
             conn.execute(
-                "UPDATE grade_submissions SET status=?, unlock_reason=?, updated_at=datetime('now') WHERE subject_id=? AND section_id=? AND quarter=?",
-                (status, unlock_reason, subject_id, section_id, quarter)
+                "UPDATE grade_submissions SET status=?, unlock_reason=?, updated_at=datetime('now') WHERE subject_id=? AND section_id=? AND semester=? AND quarter=?",
+                (status, unlock_reason, subject_id, section_id, semester, quarter)
             )
         else:
             conn.execute(
-                "UPDATE grade_submissions SET status=?, updated_at=datetime('now') WHERE subject_id=? AND section_id=? AND quarter=?",
-                (status, subject_id, section_id, quarter)
+                "UPDATE grade_submissions SET status=?, updated_at=datetime('now') WHERE subject_id=? AND section_id=? AND semester=? AND quarter=?",
+                (status, subject_id, section_id, semester, quarter)
             )
     else:
         conn.execute(
-            "INSERT INTO grade_submissions (subject_id,section_id,quarter,status,approved_by,unlock_reason) VALUES (?,?,?,?,?,?)",
-            (subject_id, section_id, quarter, status, approved_by, unlock_reason)
+            "INSERT INTO grade_submissions (subject_id,section_id,semester,quarter,status,approved_by,unlock_reason) VALUES (?,?,?,?,?,?,?)",
+            (subject_id, section_id, semester, quarter, status, approved_by, unlock_reason)
         )
 
 # approve_grades also accepts Submitted → Approved transition
@@ -2658,7 +3302,10 @@ def approve_grades():
         return jsonify({'ok': False, 'error': 'A reason is required to unlock grades.', 'need_reason': True}), 400
 
     conn = get_db()
-    current = get_submission_status(conn, subject_id, section_id, quarter)
+    semester = (d.get('semester') or '').strip()
+    if not semester:
+        semester = get_effective_semester(conn, subject_id, section_id)
+    current = get_submission_status(conn, subject_id, section_id, quarter, semester)
 
     valid = {'approve': current in ('Draft','Submitted'), 'lock': current == 'Approved', 'unlock': current == 'Locked', 'revert': current in ('Submitted','Approved')}
     if not valid[action]:
@@ -2669,7 +3316,8 @@ def approve_grades():
     new_status = status_map[action]
     upsert_submission(conn, subject_id, section_id, quarter, new_status,
                       approved_by=session.get('admin_name', 'Admin'),
-                      unlock_reason=reason if action == 'unlock' else None)
+                      unlock_reason=reason if action == 'unlock' else None,
+                      semester=semester)
     conn.commit()
     conn.close()
     return jsonify({'ok': True, 'status': new_status})
@@ -2681,9 +3329,12 @@ def submission_status():
     subject_id = request.args.get('subject_id', type=int)
     section_id = request.args.get('section_id', type=int)
     conn = get_db()
+    semester = request.args.get('semester', '').strip()
+    if not semester:
+        semester = get_effective_semester(conn, subject_id, section_id)
     rows = conn.execute(
-        "SELECT quarter,status,approved_at,approved_by,locked_at,unlock_reason FROM grade_submissions WHERE subject_id=? AND section_id=?",
-        (subject_id, section_id)
+        "SELECT quarter,status,approved_at,approved_by,locked_at,unlock_reason FROM grade_submissions WHERE subject_id=? AND section_id=? AND semester=?",
+        (subject_id, section_id, semester)
     ).fetchall()
     conn.close()
     return jsonify({r['quarter']: dict(r) for r in rows})
@@ -2727,13 +3378,16 @@ def teacher_dashboard():
         ORDER BY sec.grade_level, sec.section_name, sub.subject_name
     """, (tid,)).fetchall()
 
-    # Submission statuses
+    # Submission statuses — scoped to each subject's effective semester
     QUARTERS = ['Prelim','Midterm','Semi-Final','Final']
     status_map = {}
     for row in assigned:
+        sub_sem = (row['sem'] or '').strip()
+        if sub_sem not in ('1st Semester', '2nd Semester'):
+            sub_sem = get_effective_semester(conn, row['subject_id'], row['section_id'])
         rows = conn.execute(
-            "SELECT quarter, status FROM grade_submissions WHERE subject_id=? AND section_id=?",
-            (row['subject_id'], row['section_id'])
+            "SELECT quarter, status FROM grade_submissions WHERE subject_id=? AND section_id=? AND semester=?",
+            (row['subject_id'], row['section_id'], sub_sem)
         ).fetchall()
         status_map[(row['subject_id'], row['section_id'])] = {r['quarter']: r['status'] for r in rows}
 
@@ -2782,20 +3436,52 @@ def teacher_grade_sheet(sec_id, sub_id):
 
     QUARTERS = ['Prelim','Midterm','Semi-Final','Final']
 
-    # Load submission statuses per quarter
+    # Load submission statuses per quarter — semester determined after eff_sem computed below
+    _tgs_sub_sem_raw = conn.execute("SELECT semester FROM subjects WHERE id=?", (sub_id,)).fetchone()
+    _tgs_sub_sem = (_tgs_sub_sem_raw['semester'] or '') if _tgs_sub_sem_raw else ''
+
+    sub_semester = subject['semester'] if subject else ''
+    # For WY subjects — allow teacher to switch semester via ?sem= param
+    # Also check sc.semester on their schedule entry
+    req_sem = request.args.get('sem', '').strip()
+    sched_sem_row = conn.execute(
+        "SELECT sc.semester FROM schedules sc "
+        "WHERE sc.teacher_id=? AND sc.section_id=? AND sc.subject_id=? "
+        "AND sc.semester IN ('1st Semester','2nd Semester') LIMIT 1",
+        (tid, sec_id, sub_id)
+    ).fetchone()
+    if req_sem in ('1st Semester', '2nd Semester'):
+        active_sem = req_sem
+    elif sched_sem_row:
+        active_sem = sched_sem_row['semester']
+    elif sub_semester in ('1st Semester', '2nd Semester'):
+        active_sem = sub_semester
+    else:
+        active_sem = '1st Semester'
+    # Effective semester for grade storage
+    eff_sem = active_sem if sub_semester in ('', 'Whole Year') else sub_semester
+
+    # Load submission statuses scoped to this semester
     sub_rows = conn.execute(
-        "SELECT quarter, status FROM grade_submissions WHERE subject_id=? AND section_id=?",
-        (sub_id, sec_id)
+        "SELECT quarter, status FROM grade_submissions WHERE subject_id=? AND section_id=? AND semester=?",
+        (sub_id, sec_id, eff_sem)
     ).fetchall()
     q_statuses = {r['quarter']: r['status'] for r in sub_rows}
 
-    # Load grades
+    # Get semester-scoped quarters
+    sem_q_rows = conn.execute(
+        "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id",
+        (eff_sem,)
+    ).fetchall()
+    QUARTERS = [r['period'] for r in sem_q_rows] if sem_q_rows else ['Prelim','Midterm','Semi-Final','Final']
+
+    # Load grades scoped to this semester
     grades_raw = conn.execute("""
         SELECT g.student_id, g.quarter,
                g.written_works, g.performance_tasks, g.quarterly_assessment,
                g.midterm, g.finals
-        FROM grades g WHERE g.subject_id=? AND g.section_id=?
-    """, (sub_id, sec_id)).fetchall()
+        FROM grades g WHERE g.subject_id=? AND g.section_id=? AND g.semester=?
+    """, (sub_id, sec_id, eff_sem)).fetchall()
     grade_map = {}
     for g in grades_raw:
         grade_map.setdefault(g['student_id'], {})[g['quarter']] = g
@@ -2817,18 +3503,6 @@ def teacher_grade_sheet(sec_id, sub_id):
         student_grades.append({'student': st, 'quarters': qgrades, 'average': avg,
                                 'passing': avg is not None and avg >= PASSING_GRADE})
 
-    sub_semester = subject['semester'] if subject else ''
-    # For teacher grade sheet, we need to know which semester tab is active
-    # Use the schedule's semester for this section as the active semester
-    sched_sem_row = conn.execute(
-        "SELECT COALESCE(sc.semester, sub.semester) AS sem FROM schedules sc "
-        "JOIN subjects sub ON sc.subject_id=sub.id "
-        "WHERE sc.teacher_id=? AND sc.section_id=? AND sc.subject_id=? LIMIT 1",
-        (tid, sec_id, sub_id)
-    ).fetchone()
-    active_sem = sched_sem_row['sem'] if sched_sem_row else sub_semester
-    if active_sem not in ('1st Semester', '2nd Semester'):
-        active_sem = '1st Semester'
     open_periods = get_open_periods_for_subject(conn, sub_semester, active_sem)
     conn.close()
     return render_template('teacher_grade_sheet.html',
@@ -2836,7 +3510,8 @@ def teacher_grade_sheet(sec_id, sub_id):
                            students=student_grades, quarters=QUARTERS,
                            q_statuses=q_statuses, passing_grade=PASSING_GRADE,
                            sec_id=sec_id, sub_id=sub_id,
-                           open_periods=open_periods)
+                           open_periods=open_periods,
+                           active_sem=active_sem, eff_sem=eff_sem)
 
 # ── Export grades as CSV ──
 @app.route('/teacher/grade_sheet/<int:sec_id>/<int:sub_id>/export')
@@ -2868,9 +3543,12 @@ def teacher_export_grades(sec_id, sub_id):
     if not PERIODS:
         PERIODS = ALL_PERIODS
 
+    fallback_exp = request.args.get('semester') or '1st Semester'
+    eff_sem_exp  = get_effective_semester(conn, sub_id, sec_id, fallback_exp)
     grades_raw = conn.execute(
-        "SELECT student_id, quarter, written_works, performance_tasks, quarterly_assessment FROM grades WHERE subject_id=? AND section_id=?",
-        (sub_id, sec_id)
+        "SELECT student_id, quarter, written_works, performance_tasks, quarterly_assessment "
+        "FROM grades WHERE subject_id=? AND section_id=? AND semester=?",
+        (sub_id, sec_id, eff_sem_exp)
     ).fetchall()
     grade_map = {}
     for g in grades_raw:
@@ -2926,9 +3604,11 @@ def admin_export_grades(sec_id):
     if not PERIODS:
         PERIODS = ALL_PERIODS
 
+    fallback_exp = request.args.get('semester') or '1st Semester'
     grades_raw = conn.execute(
-        "SELECT student_id, quarter, written_works, performance_tasks, quarterly_assessment FROM grades WHERE subject_id=? AND section_id=?",
-        (sub_id, sec_id)
+        "SELECT student_id, quarter, written_works, performance_tasks, quarterly_assessment "
+        "FROM grades WHERE subject_id=? AND section_id=? AND semester=?",
+        (sub_id, sec_id, get_effective_semester(conn, sub_id, sec_id, fallback_exp))
     ).fetchall()
     grade_map = {}
     for g in grades_raw:
@@ -2959,6 +3639,20 @@ def admin_export_grades(sec_id):
     return resp
 
 # ── Import grades from CSV (teacher) ──
+
+def get_effective_semester(conn, subject_id, section_id, fallback_sem='1st Semester'):
+    """Get the effective semester for grade storage.
+    For regular (1st/2nd) subjects: returns sub.semester directly.
+    For Whole Year or unset: uses fallback_sem (the active semester tab).
+    """
+    sub = conn.execute("SELECT semester FROM subjects WHERE id=?", (subject_id,)).fetchone()
+    if not sub:
+        return fallback_sem
+    sub_sem = (sub['semester'] or '').strip()
+    if sub_sem in ('1st Semester', '2nd Semester'):
+        return sub_sem
+    # Whole Year, 'Whole Year', or blank — caller must pass correct active_sem as fallback
+    return fallback_sem
 @app.route('/teacher/grade_sheet/<int:sec_id>/<int:sub_id>/import', methods=['POST'])
 @teacher_required
 def teacher_import_grades(sec_id, sub_id):
@@ -2973,10 +3667,12 @@ def teacher_import_grades(sec_id, sub_id):
         conn.close()
         return jsonify({'ok': False, 'error': 'Not authorized'}), 403
 
-    # Block if any period is not Draft
+    # Block if any period is not Draft — scoped to this semester
+    import_sem = request.form.get('semester') or request.args.get('semester') or '1st Semester'
+    import_eff_sem = get_effective_semester(conn, sub_id, sec_id, import_sem)
     locked_periods = conn.execute(
-        "SELECT quarter FROM grade_submissions WHERE subject_id=? AND section_id=? AND status != 'Draft'",
-        (sub_id, sec_id)
+        "SELECT quarter FROM grade_submissions WHERE subject_id=? AND section_id=? AND semester=? AND status != 'Draft'",
+        (sub_id, sec_id, import_eff_sem)
     ).fetchall()
     if locked_periods:
         names = ', '.join(r['quarter'] for r in locked_periods)
@@ -3004,6 +3700,17 @@ def teacher_import_grades(sec_id, sub_id):
         "SELECT id, student_id FROM students WHERE section_id=?", (sec_id,)
     ).fetchall()
     student_map = {s['student_id']: s['id'] for s in students}
+
+    # Determine effective semester for grade storage
+    fallback_sem = request.form.get('semester') or request.args.get('semester') or '1st Semester'
+    eff_sem = get_effective_semester(conn, sub_id, sec_id, fallback_sem)
+
+    # Scope to quarters for this semester only
+    sem_q_rows = conn.execute(
+        "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id", (eff_sem,)
+    ).fetchall()
+    if sem_q_rows:
+        PERIODS = [r['period'] for r in sem_q_rows]
 
     updated = skipped = errors = 0
     error_msgs = []
@@ -3037,18 +3744,18 @@ def teacher_import_grades(sec_id, sub_id):
 
                 db_col = COMP_FULL[comp]
                 existing = conn.execute(
-                    "SELECT id FROM grades WHERE student_id=? AND subject_id=? AND section_id=? AND quarter=?",
-                    (db_sid, sub_id, sec_id, p)
+                    "SELECT id FROM grades WHERE student_id=? AND subject_id=? AND section_id=? AND semester=? AND quarter=?",
+                    (db_sid, sub_id, sec_id, eff_sem, p)
                 ).fetchone()
                 if existing:
                     conn.execute(
-                        f"UPDATE grades SET {db_col}=?, updated_at=datetime('now') WHERE student_id=? AND subject_id=? AND section_id=? AND quarter=?",
-                        (val, db_sid, sub_id, sec_id, p)
+                        f"UPDATE grades SET {db_col}=?, updated_at=datetime('now') WHERE student_id=? AND subject_id=? AND section_id=? AND semester=? AND quarter=?",
+                        (val, db_sid, sub_id, sec_id, eff_sem, p)
                     )
                 else:
                     conn.execute(
-                        "INSERT INTO grades (student_id,subject_id,section_id,quarter,written_works,performance_tasks,quarterly_assessment) VALUES (?,?,?,?,?,?,?)",
-                        (db_sid, sub_id, sec_id, p,
+                        "INSERT INTO grades (student_id,subject_id,section_id,semester,quarter,written_works,performance_tasks,quarterly_assessment) VALUES (?,?,?,?,?,?,?,?)",
+                        (db_sid, sub_id, sec_id, eff_sem, p,
                          val if db_col=='written_works' else None,
                          val if db_col=='performance_tasks' else None,
                          val if db_col=='quarterly_assessment' else None)
@@ -3095,6 +3802,17 @@ def admin_import_grades(sec_id):
     ).fetchall()
     student_map = {s['student_id']: s['id'] for s in students}
 
+    # Determine effective semester for grade storage
+    fallback_sem = request.args.get('semester') or '1st Semester'
+    eff_sem = get_effective_semester(conn, sub_id, sec_id, fallback_sem)
+
+    # Scope to quarters for this semester only
+    sem_q_rows = conn.execute(
+        "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id", (eff_sem,)
+    ).fetchall()
+    if sem_q_rows:
+        PERIODS = [r['period'] for r in sem_q_rows]
+
     updated = skipped = errors = 0
     error_msgs = []
 
@@ -3126,18 +3844,18 @@ def admin_import_grades(sec_id):
 
                 db_col   = COMP_FULL[comp]
                 existing = conn.execute(
-                    "SELECT id FROM grades WHERE student_id=? AND subject_id=? AND section_id=? AND quarter=?",
-                    (db_sid, sub_id, sec_id, p)
+                    "SELECT id FROM grades WHERE student_id=? AND subject_id=? AND section_id=? AND semester=? AND quarter=?",
+                    (db_sid, sub_id, sec_id, eff_sem, p)
                 ).fetchone()
                 if existing:
                     conn.execute(
-                        f"UPDATE grades SET {db_col}=?, updated_at=datetime('now') WHERE student_id=? AND subject_id=? AND section_id=? AND quarter=?",
-                        (val, db_sid, sub_id, sec_id, p)
+                        f"UPDATE grades SET {db_col}=?, updated_at=datetime('now') WHERE student_id=? AND subject_id=? AND section_id=? AND semester=? AND quarter=?",
+                        (val, db_sid, sub_id, sec_id, eff_sem, p)
                     )
                 else:
                     conn.execute(
-                        "INSERT INTO grades (student_id,subject_id,section_id,quarter,written_works,performance_tasks,quarterly_assessment) VALUES (?,?,?,?,?,?,?)",
-                        (db_sid, sub_id, sec_id, p,
+                        "INSERT INTO grades (student_id,subject_id,section_id,semester,quarter,written_works,performance_tasks,quarterly_assessment) VALUES (?,?,?,?,?,?,?,?)",
+                        (db_sid, sub_id, sec_id, eff_sem, p,
                          val if db_col=='written_works' else None,
                          val if db_col=='performance_tasks' else None,
                          val if db_col=='quarterly_assessment' else None)
@@ -3167,25 +3885,28 @@ def teacher_submit_quarter():
         conn.close()
         return jsonify({'ok': False, 'error': 'Not authorized'}), 403
 
-    current = get_submission_status(conn, subject_id, section_id, quarter)
+    semester = (d.get('semester') or '').strip()
+    if not semester:
+        semester = get_effective_semester(conn, subject_id, section_id)
+    current = get_submission_status(conn, subject_id, section_id, quarter, semester)
     if current != 'Draft':
         conn.close()
         return jsonify({'ok': False, 'error': f'Quarter is already {current}'}), 400
 
     # Upsert to Submitted
     existing = conn.execute(
-        "SELECT id FROM grade_submissions WHERE subject_id=? AND section_id=? AND quarter=?",
-        (subject_id, section_id, quarter)
+        "SELECT id FROM grade_submissions WHERE subject_id=? AND section_id=? AND semester=? AND quarter=?",
+        (subject_id, section_id, semester, quarter)
     ).fetchone()
     if existing:
         conn.execute(
-            "UPDATE grade_submissions SET status='Submitted', teacher_id=?, submitted_at=datetime('now'), updated_at=datetime('now') WHERE subject_id=? AND section_id=? AND quarter=?",
-            (tid, subject_id, section_id, quarter)
+            "UPDATE grade_submissions SET status='Submitted', teacher_id=?, submitted_at=datetime('now'), updated_at=datetime('now') WHERE subject_id=? AND section_id=? AND semester=? AND quarter=?",
+            (tid, subject_id, section_id, semester, quarter)
         )
     else:
         conn.execute(
-            "INSERT INTO grade_submissions (teacher_id,subject_id,section_id,quarter,status,submitted_at) VALUES (?,?,?,?,'Submitted',datetime('now'))",
-            (tid, subject_id, section_id, quarter)
+            "INSERT INTO grade_submissions (teacher_id,subject_id,section_id,semester,quarter,status,submitted_at) VALUES (?,?,?,?,?,'Submitted',datetime('now'))",
+            (tid, subject_id, section_id, semester, quarter)
         )
     conn.commit()
     conn.close()
@@ -3241,14 +3962,14 @@ def student_dashboard():
     sub_statuses = {}
     if student['sec_id']:
         rows = conn.execute(
-            "SELECT subject_id, quarter, status FROM grade_submissions WHERE section_id=?",
+            "SELECT subject_id, semester, quarter, status FROM grade_submissions WHERE section_id=?",
             (student['sec_id'],)
         ).fetchall()
         for r in rows:
-            sub_statuses.setdefault(r['subject_id'], {})[r['quarter']] = r['status']
+            sub_statuses[(r['subject_id'], r['semester'] or '', r['quarter'])] = r['status']
 
     grades_raw = conn.execute(
-        "SELECT subject_id, quarter, written_works, performance_tasks, quarterly_assessment FROM grades WHERE student_id=?",
+        "SELECT subject_id, semester, quarter, written_works, performance_tasks, quarterly_assessment FROM grades WHERE student_id=?",
         (sid,)
     ).fetchall()
     grade_map = {}
@@ -3464,10 +4185,15 @@ def teacher_subject_detail(sub_id, sec_id):
             WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6 ELSE 7 END
     """, (tid, sub_id, sec_id)).fetchall()
 
+    males   = [s for s in students if (s['gender'] or '').upper() == 'MALE']
+    females = [s for s in students if (s['gender'] or '').upper() == 'FEMALE']
+    others  = [s for s in students if (s['gender'] or '').upper() not in ('MALE','FEMALE')]
+
     conn.close()
     return render_template('teacher_subject_detail.html',
                            subject=subject, section=section,
-                           students=students, schedule=schedule)
+                           students=students, schedule=schedule,
+                           males=males, females=females, others=others)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -3491,18 +4217,17 @@ def student_subjects():
 
     COLORS = ['var(--blue-course)', 'var(--teal-course)', 'var(--yellow-course)', 'var(--pink-course)', 'var(--dark-teal-course)', 'var(--medium-blue-course)', 'var(--mint-green-course)', 'var(--green-course)', 'var(--orange-course)', 'var(--slate-blue-course)', 'var(--dark-green-course)', 'var(--orange-red-course)']
 
-    # One row per distinct subject (no schedule duplication)
-    # One row per subject with deduplicated schedule slots
+    # Fetch all schedule rows — group by subject, collect all teachers+schedules
     all_rows = conn.execute("""
         SELECT sc.subject_id, sub.subject_name, sub.subject_code,
-               sub.semester,
-               t.first_name, t.last_name, t.email AS teacher_email,
+               COALESCE(sc.semester, sub.semester) AS semester,
+               t.id AS teacher_id, t.first_name, t.last_name, t.email AS teacher_email,
                sc.day, sc.time_start, sc.time_end, sc.room
         FROM schedules sc
         JOIN subjects sub ON sc.subject_id=sub.id
         JOIN teachers t   ON sc.teacher_id=t.id
         WHERE sc.section_id=?
-        ORDER BY sub.semester, sub.subject_name,
+        ORDER BY sub.subject_name, sc.semester,
             CASE sc.day WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2
             WHEN 'Wednesday' THEN 3 WHEN 'Thursday' THEN 4
             WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6 ELSE 7 END
@@ -3515,34 +4240,47 @@ def student_subjects():
         sub_id = r['subject_id']
         if sub_id not in subjects_dict:
             subjects_dict[sub_id] = {
-                'id':            sub_id,
-                'subject_name':  r['subject_name'],
-                'subject_code':  r['subject_code'],
-                'semester':      r['semester'] or '',
-                'first_name':    r['first_name'],
-                'last_name':     r['last_name'],
-                'teacher_email': r['teacher_email'],
-                'schedules':     [],
-                '_seen_slots':   set(),
+                'id':           sub_id,
+                'subject_name': r['subject_name'],
+                'subject_code': r['subject_code'],
+                'semester':     r['semester'] or '',
+                'teachers':     OrderedDict(),  # teacher_id -> {name, email, schedules}
             }
-        # Deduplicate schedule slots by day+time (prevents Whole Year duplicates)
+        sub = subjects_dict[sub_id]
+        # Collect teacher info (deduplicated by teacher_id)
+        tid = r['teacher_id']
+        if tid not in sub['teachers']:
+            sub['teachers'][tid] = {
+                'first_name': r['first_name'],
+                'last_name':  r['last_name'],
+                'email':      r['teacher_email'],
+                'schedules':  [],
+                '_seen':      set(),
+            }
+        # Add schedule slot under the correct teacher, deduplicated
         slot_key = (r['day'], r['time_start'], r['time_end'])
-        if slot_key not in subjects_dict[sub_id]['_seen_slots']:
-            subjects_dict[sub_id]['_seen_slots'].add(slot_key)
-            subjects_dict[sub_id]['schedules'].append({
+        if slot_key not in sub['teachers'][tid]['_seen']:
+            sub['teachers'][tid]['_seen'].add(slot_key)
+            sub['teachers'][tid]['schedules'].append({
                 'day':        r['day'],
                 'time_start': r['time_start'],
                 'time_end':   r['time_end'],
                 'room':       r['room'],
             })
 
-    for sub in subjects_dict.values():
-        del sub['_seen_slots']
-
+    # Clean up helper sets and build cards
     cards = []
     for i, (sub_id, sub) in enumerate(subjects_dict.items()):
-        initials = (sub['first_name'][0] + sub['last_name'][0]).upper() if sub['first_name'] else '?'
-        cards.append({'sub': sub, 'color': COLORS[i % len(COLORS)], 'initials': initials})
+        teachers = []
+        for tid, t in sub['teachers'].items():
+            del t['_seen']
+            initials = (t['first_name'][0] + t['last_name'][0]).upper()
+            t['initials'] = initials
+            teachers.append(t)
+        sub['teachers'] = teachers
+        # Card initials = first teacher's initials
+        card_initials = teachers[0]['initials'] if teachers else '?'
+        cards.append({'sub': sub, 'color': COLORS[i % len(COLORS)], 'initials': card_initials})
     return render_template('student_subjects.html', cards=cards, student=student)
 
 
@@ -3581,6 +4319,1859 @@ def student_subject_detail(sub_id):
     return render_template('student_subject_detail.html',
                            subject=subject, teacher_rows=teacher,
                            student=student)
+
+
+# ══════════════════════════════════════════════════════════════
+# ── ATTENDANCE MODULE ─────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════
+
+def attendance_summary(conn, event_id):
+    rows = conn.execute(
+        "SELECT status, COUNT(*) AS cnt FROM attendance_records WHERE event_id=? GROUP BY status",
+        (event_id,)
+    ).fetchall()
+    s = {'Present':0,'Absent':0,'Excused':0,'Late':0}
+    for r in rows:
+        s[r['status']] = r['cnt']
+    return s
+
+
+@app.route('/attendance')
+@login_required
+def attendance_home():
+    conn = get_db()
+    events = conn.execute(
+        "SELECT ae.*, sec.section_name, sub.subject_name,"
+        " t.first_name||' '||t.last_name AS teacher_name,"
+        " ac.name AS category_name, ac.color AS category_color, ac.icon AS category_icon"
+        " FROM attendance_events ae"
+        " LEFT JOIN sections sec ON ae.section_id=sec.id"
+        " LEFT JOIN subjects sub ON ae.subject_id=sub.id"
+        " LEFT JOIN teachers t ON ae.teacher_id=t.id"
+        " LEFT JOIN attendance_categories ac ON ae.category_id=ac.id"
+        " ORDER BY ae.event_date DESC, ae.id DESC"
+    ).fetchall()
+    sections      = conn.execute("SELECT id,section_name,grade_level FROM sections ORDER BY grade_level,section_name").fetchall()
+    subjects      = conn.execute("SELECT id,subject_name,subject_code FROM subjects ORDER BY subject_name").fetchall()
+    teachers      = conn.execute("SELECT id,first_name,last_name FROM teachers ORDER BY last_name").fetchall()
+    categories    = conn.execute("SELECT * FROM attendance_categories ORDER BY name").fetchall()
+    organizations = conn.execute("SELECT * FROM organizations ORDER BY name").fetchall()
+    all_students  = conn.execute(
+        "SELECT id, student_id, first_name, last_name, middle_name"
+        " FROM students WHERE enrollment_status='Enrolled' ORDER BY last_name, first_name"
+    ).fetchall()
+    conn.close()
+    return render_template('attendance_home.html', events=events,
+                           sections=sections, subjects=subjects, teachers=teachers,
+                           all_students=all_students, categories=categories,
+                           organizations=organizations)
+
+
+
+@app.route('/attendance/create', methods=['POST'])
+@login_required
+def create_attendance_event():
+    d = request.form
+    conn = get_db()
+    try:
+        late_mins = int(d.get('late_allowance_minutes') or 0)
+    except (ValueError, TypeError):
+        late_mins = 0
+    is_compulsory      = 1 if d.get('is_compulsory','1') == '1' else 0
+    recorded_scope     = d.get('recorded_scope', 'all')
+    attendee_positions = ','.join(request.form.getlist('attendee_positions')) or None
+    attendee_org_ids   = ','.join(request.form.getlist('attendee_org_ids'))   or None
+    conn.execute(
+        "INSERT INTO attendance_events"
+        " (title,event_type,event_date,time_start,time_end,late_allowance_minutes,"
+        "  is_compulsory,recorded_scope,attendee_positions,attendee_org_ids,"
+        "  description,category_id,section_id,subject_id,authorized_type,authorized_id,created_by)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (d['title'].strip(), d['event_type'], d['event_date'],
+         d.get('time_start','').strip() or None,
+         d.get('time_end','').strip() or None,
+         late_mins, is_compulsory, recorded_scope, attendee_positions, attendee_org_ids,
+         d.get('description','').strip() or None,
+         d.get('category_id') or None,
+         d.get('section_id') or None, d.get('subject_id') or None,
+         d.get('authorized_type','teacher'),
+         d.get('authorized_id') or None,
+         session.get('admin_name','Admin'))
+    )
+    eid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    # Save authorized persons (multiple teachers and/or students)
+    for person_id in request.form.getlist('authorized_teacher_ids'):
+        if person_id:
+            try:
+                conn.execute("INSERT OR IGNORE INTO attendance_authorized (event_id,person_type,person_id) VALUES (?,?,?)", (eid,'teacher',int(person_id)))
+            except Exception: pass
+    for person_id in request.form.getlist('authorized_student_ids'):
+        if person_id:
+            try:
+                conn.execute("INSERT OR IGNORE INTO attendance_authorized (event_id,person_type,person_id) VALUES (?,?,?)", (eid,'student',int(person_id)))
+            except Exception: pass
+    conn.commit(); conn.close()
+    flash('Attendance event created.', 'success')
+    return redirect(url_for('attendance_home'))
+
+
+@app.route('/attendance/event/<int:eid>')
+@login_required
+def attendance_event(eid):
+    conn = get_db()
+    event = conn.execute(
+        "SELECT ae.*, sec.section_name, sec.grade_level, sub.subject_name, sub.subject_code, "
+        "t.first_name||\' \'||t.last_name AS teacher_name "
+        "FROM attendance_events ae "
+        "LEFT JOIN sections sec ON ae.section_id=sec.id "
+        "LEFT JOIN subjects sub ON ae.subject_id=sub.id "
+        "LEFT JOIN teachers t ON ae.teacher_id=t.id "
+        "WHERE ae.id=?", (eid,)
+    ).fetchone()
+    if not event:
+        flash('Event not found.', 'danger')
+        return redirect(url_for('attendance_home'))
+    scope = (event['recorded_scope'] if 'recorded_scope' in event.keys() else None) or 'all'
+
+    if scope == 'by_position':
+        pos_str  = event['attendee_positions'] if 'attendee_positions' in event.keys() else None
+        pos_list = [p.strip() for p in (pos_str or '').split(',') if p.strip()]
+        if pos_list:
+            ph = ','.join('?' * len(pos_list))
+            pos_rows = conn.execute(
+                f"SELECT DISTINCT s.id, s.student_id, s.first_name, s.last_name, s.middle_name, s.gender,"
+                f" sec.section_name, op.position_name, o.name AS org_name"
+                f" FROM org_members om"
+                f" JOIN students s ON om.student_id=s.id"
+                f" JOIN org_positions op ON om.position_id=op.id"
+                f" JOIN organizations o ON om.org_id=o.id"
+                f" LEFT JOIN sections sec ON s.section_id=sec.id"
+                f" WHERE op.position_name IN ({ph}) AND om.is_active=1"
+                f" AND s.enrollment_status='Enrolled'"
+                f" ORDER BY s.last_name, s.first_name", pos_list
+            ).fetchall()
+            students = [dict(r, id=int(r['id'])) for r in pos_rows]
+        else:
+            students = []
+    elif scope == 'authorized_only':
+        # Only the students listed in attendance_authorized for this event
+        # Use subquery to avoid duplicate rows from multiple org memberships
+        auth_rows = conn.execute(
+            "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name, s.gender,"
+            " sec.section_name"
+            " FROM attendance_authorized aa"
+            " JOIN students s ON aa.person_id=s.id"
+            " LEFT JOIN sections sec ON s.section_id=sec.id"
+            " WHERE aa.event_id=? AND aa.person_type=\'student\'"
+            " ORDER BY s.last_name, s.first_name", (eid,)
+        ).fetchall()
+        # For each authorized student, get their most relevant position (prefer govt over section)
+        students_list = []
+        for row in auth_rows:
+            pos_row = conn.execute(
+                "SELECT op.position_name, o.name AS org_name"
+                " FROM org_members om"
+                " JOIN org_positions op ON om.position_id=op.id"
+                " JOIN organizations o ON om.org_id=o.id"
+                " WHERE om.student_id=? AND om.is_active=1"
+                " ORDER BY CASE o.org_type WHEN \'government\' THEN 0 WHEN \'section\' THEN 2 ELSE 1 END"
+                " LIMIT 1", (row['id'],)
+            ).fetchone()
+            students_list.append({
+                'id':           int(row['id']),
+                'student_id':   row['student_id'],
+                'first_name':   row['first_name'],
+                'last_name':    row['last_name'],
+                'middle_name':  row['middle_name'],
+                'gender':       row['gender'],
+                'section_name': row['section_name'],
+                'position_name': pos_row['position_name'] if pos_row else '',
+                'org_name':     pos_row['org_name'] if pos_row else '',
+            })
+        students = students_list
+    elif event['event_type'] == 'school':
+        rows = conn.execute(
+            "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name, s.gender,"
+            " sec.section_name"
+            " FROM students s LEFT JOIN sections sec ON s.section_id=sec.id"
+            " WHERE s.enrollment_status=\'Enrolled\' ORDER BY s.last_name, s.first_name"
+        ).fetchall()
+        students = [dict(r, position_name='', org_name='') for r in rows]
+    else:
+        rows = conn.execute(
+            "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name, s.gender,"
+            " sec.section_name"
+            " FROM students s LEFT JOIN sections sec ON s.section_id=sec.id"
+            " WHERE s.section_id=? AND s.enrollment_status=\'Enrolled\'"
+            " ORDER BY s.last_name, s.first_name", (event['section_id'],)
+        ).fetchall()
+        students = [dict(r, position_name='', org_name='') for r in rows]
+
+    records    = conn.execute(
+        "SELECT student_id, status, note FROM attendance_records WHERE event_id=?", (eid,)
+    ).fetchall()
+    record_map = {int(r['student_id']): dict(r) for r in records}
+    summary    = attendance_summary(conn, eid)
+    authorized = conn.execute(
+        "SELECT person_type, person_id FROM attendance_authorized WHERE event_id=?", (eid,)
+    ).fetchall()
+    conn.close()
+    def get_gender(s):
+        try: return (s['gender'] or '').upper()
+        except (KeyError, IndexError): return (getattr(s, 'gender', '') or '').upper()
+    males   = [s for s in students if get_gender(s) == 'MALE']
+    females = [s for s in students if get_gender(s) == 'FEMALE']
+    others  = [s for s in students if get_gender(s) not in ('MALE','FEMALE')]
+    # Compute display stats scoped to the attendee list
+    if scope in ('by_position', 'authorized_only'):
+        sp = se = sq = sl = 0
+        for st in students:
+            rec = record_map.get(int(st['id']) if isinstance(st, dict) else st.id)
+            if rec:
+                s = rec['status'] if isinstance(rec, dict) else rec.status
+                if s == 'Present':  sp += 1
+                elif s == 'Absent': se += 1
+                elif s == 'Excused': sq += 1
+                elif s == 'Late':   sl += 1
+            else:
+                se += 1  # unscanned = absent
+        stat_total   = len(students)
+        stat_present = sp
+        stat_absent  = se
+        stat_excused = sq
+        stat_late    = sl
+    else:
+        stat_total   = summary['Present'] + summary['Absent'] + summary['Excused'] + summary['Late']
+        stat_present = summary['Present']
+        stat_absent  = summary['Absent']
+        stat_excused = summary['Excused']
+        stat_late    = summary['Late']
+
+    return render_template('attendance_event.html', event=event, scope=scope,
+                           students=students, males=males, females=females, others=others,
+                           record_map=record_map, summary=summary, authorized=authorized,
+                           stat_total=stat_total, stat_present=stat_present,
+                           stat_absent=stat_absent, stat_excused=stat_excused,
+                           stat_late=stat_late)
+
+
+@app.route('/attendance/event/<int:eid>/close', methods=['POST'])
+@login_required
+def close_attendance_event(eid):
+    """Mark all unscanned attendees as Absent and lock the event."""
+    conn = get_db()
+    event = conn.execute(
+        "SELECT scope, recorded_scope, attendee_positions, attendee_org_ids FROM attendance_events WHERE id=?", (eid,)
+    ).fetchone()
+    if not event:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Event not found'}), 404
+
+    scope    = (event['recorded_scope'] if 'recorded_scope' in event.keys() else None) or 'all'
+    pos_str  = event['attendee_positions'] if 'attendee_positions' in event.keys() else None
+    oid_str  = event['attendee_org_ids']   if 'attendee_org_ids'   in event.keys() else None
+    pos_list = [p.strip() for p in (pos_str or '').split(',') if p.strip()]
+    oid_list = [o.strip() for o in (oid_str or '').split(',') if o.strip()]
+
+    if scope == 'by_position' and pos_list:
+        ph = ','.join('?' * len(pos_list))
+        students = conn.execute(
+            f"SELECT DISTINCT s.id FROM org_members om"
+            f" JOIN students s ON om.student_id=s.id"
+            f" JOIN org_positions op ON om.position_id=op.id"
+            f" WHERE op.position_name IN ({ph}) AND om.is_active=1"
+            f" AND s.enrollment_status='Enrolled'", pos_list
+        ).fetchall()
+    elif scope == 'all':
+        students = conn.execute(
+            "SELECT id FROM students WHERE enrollment_status='Enrolled'"
+        ).fetchall()
+    else:
+        students = []
+
+    marked = 0
+    for s in students:
+        existing = conn.execute(
+            "SELECT id FROM attendance_records WHERE event_id=? AND student_id=?", (eid, s['id'])
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO attendance_records (event_id,student_id,status) VALUES (?,?,?)",
+                (eid, s['id'], 'Absent')
+            )
+            marked += 1
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'marked_absent': marked})
+
+
+@app.route('/attendance/event/<int:eid>/save', methods=['POST'])
+@login_required
+def save_attendance(eid):
+    d = request.get_json(force=True) or {}
+    conn = get_db()
+    for rec in d.get('records', []):
+        sid = rec.get('student_id')
+        status = rec.get('status', 'Present')
+        note = (rec.get('note') or '').strip() or None
+        if not sid or status not in ('Present','Absent','Excused','Late'):
+            continue
+        conn.execute(
+            "INSERT INTO attendance_records (event_id,student_id,status,note) VALUES (?,?,?,?) "
+            "ON CONFLICT(event_id,student_id) DO UPDATE SET "
+            "status=excluded.status,note=excluded.note,recorded_at=datetime(\'now\')",
+            (eid, sid, status, note)
+        )
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/attendance/event/<int:eid>/scan', methods=['POST'])
+@login_required
+def scan_attendance(eid):
+    from datetime import datetime, timedelta
+    d = request.get_json(force=True) or {}
+    sid_str = (d.get('student_id') or '').strip()
+    conn = get_db()
+
+    # Get event details for time-based auto status and scope
+    event = conn.execute(
+        "SELECT time_start, late_allowance_minutes, recorded_scope, attendee_positions, attendee_org_ids FROM attendance_events WHERE id=?", (eid,)
+    ).fetchone()
+
+    student = conn.execute(
+        "SELECT id, first_name, last_name, middle_name FROM students WHERE student_id=?", (sid_str,)
+    ).fetchone()
+    if not student:
+        conn.close()
+        return jsonify({'ok': False, 'error': f'Student ID "{sid_str}" not found.'})
+
+    # Scope check: restrict scanning based on recorded_scope
+    scope_val = (event['recorded_scope'] if 'recorded_scope' in event.keys() else None) or 'all'
+    if scope_val == 'by_position':
+        pos_str  = event['attendee_positions'] if 'attendee_positions' in event.keys() else None
+        oid_str  = event['attendee_org_ids']   if 'attendee_org_ids'   in event.keys() else None
+        pos_list = [p.strip() for p in (pos_str or '').split(',') if p.strip()]
+        oid_list = [o.strip() for o in (oid_str or '').split(',') if o.strip()]
+        if pos_list:
+            ph = ','.join('?' * len(pos_list))
+            on_list = conn.execute(
+                f"SELECT 1 FROM org_members om"
+                f" JOIN org_positions op ON om.position_id=op.id"
+                f" WHERE om.student_id=? AND om.is_active=1 AND op.position_name IN ({ph})",
+                [student['id']] + pos_list
+            ).fetchone()
+            if not on_list:
+                conn.close()
+                mn = clean_middle_name(student['middle_name'] or '')
+                mi = f' {mn[0].upper()}.' if mn else ''
+                name = f"{student['last_name']}, {student['first_name']}{mi}"
+                return jsonify({'ok': False, 'not_authorized': True,
+                                'error': f'{name} does not hold any of the required positions for this event.'})
+    if False and event and event['recorded_scope'] == 'authorized_only':
+        is_auth = conn.execute(
+            "SELECT 1 FROM attendance_authorized"
+            " WHERE event_id=? AND person_type='student' AND person_id=?",
+            (eid, student['id'])
+        ).fetchone()
+        if not is_auth:
+            conn.close()
+            mn = clean_middle_name(student['middle_name'] or '')
+            mi = f' {mn[0].upper()}.' if mn else ''
+            name = f"{student['last_name']}, {student['first_name']}{mi}"
+            return jsonify({'ok': False, 'not_authorized': True,
+                            'error': f'{name} is not on the attendee list for this event.'})
+
+    # Auto-determine status from current time
+    status = 'Present'
+    time_info = ''
+    if event and event['time_start']:
+        try:
+            now         = datetime.now()
+            time_start  = datetime.strptime(event['time_start'], '%H:%M').replace(
+                              year=now.year, month=now.month, day=now.day)
+            allowance   = int(event['late_allowance_minutes'] or 0)
+            cutoff      = time_start + timedelta(minutes=allowance)
+            if now > cutoff:
+                status = 'Late'
+            time_info = f'{now.strftime("%I:%M %p")}'
+        except Exception:
+            pass
+
+    conn.execute(
+        "INSERT INTO attendance_records (event_id,student_id,status) VALUES (?,?,?) "
+        "ON CONFLICT(event_id,student_id) DO UPDATE SET "
+        "status=excluded.status,recorded_at=datetime(\'now\')",
+        (eid, student['id'], status)
+    )
+    conn.commit(); conn.close()
+
+    mn = clean_middle_name((student['middle_name'] or ''))
+    mi = f' {mn[0].upper()}.' if mn else ''
+    full_name = f"{student['last_name']}, {student['first_name']}{mi}"
+    return jsonify({'ok': True, 'name': full_name, 'status': status,
+                   'time_info': time_info, 'student_db_id': student['id']})
+
+
+@app.route('/attendance/event/<int:eid>/delete', methods=['POST'])
+@login_required
+def delete_attendance_event(eid):
+    conn = get_db()
+    conn.execute("DELETE FROM attendance_events WHERE id=?", (eid,))
+    conn.commit(); conn.close()
+    flash('Attendance event deleted.', 'success')
+    return redirect(url_for('attendance_home'))
+
+
+# ── TEACHER: Class attendance ──
+
+@app.route('/teacher/attendance')
+@teacher_required
+def teacher_attendance_home():
+    tid  = session['teacher_id']
+    conn = get_db()
+    assignments = conn.execute(
+        "SELECT DISTINCT sc.section_id, sc.subject_id, "
+        "sec.section_name, sec.grade_level, sub.subject_name, sub.subject_code, "
+        "(SELECT COUNT(*) FROM students s WHERE s.section_id=sc.section_id AND s.enrollment_status=\'Enrolled\') AS student_count, "
+        "(SELECT COUNT(*) FROM attendance_events ae WHERE ae.section_id=sc.section_id AND ae.subject_id=sc.subject_id AND ae.teacher_id=?) AS event_count "
+        "FROM schedules sc "
+        "JOIN sections sec ON sc.section_id=sec.id "
+        "JOIN subjects sub ON sc.subject_id=sub.id "
+        "WHERE sc.teacher_id=? ORDER BY sec.grade_level, sec.section_name, sub.subject_name",
+        (tid, tid)
+    ).fetchall()
+    conn.close()
+    return render_template('teacher_attendance_home.html', assignments=assignments)
+
+
+@app.route('/teacher/attendance/section/<int:sec_id>/subject/<int:sub_id>')
+@teacher_required
+def teacher_attendance_sheet(sec_id, sub_id):
+    tid  = session['teacher_id']
+    conn = get_db()
+    # Verify this teacher teaches this section+subject
+    assigned = conn.execute(
+        "SELECT id FROM schedules WHERE teacher_id=? AND section_id=? AND subject_id=?",
+        (tid, sec_id, sub_id)
+    ).fetchone()
+    if not assigned:
+        flash('Not authorized.', 'danger')
+        return redirect(url_for('teacher_attendance_home'))
+    section = conn.execute("SELECT * FROM sections WHERE id=?", (sec_id,)).fetchone()
+    subject = conn.execute("SELECT * FROM subjects WHERE id=?", (sub_id,)).fetchone()
+    # All enrolled students in this section
+    students = conn.execute(
+        "SELECT id, student_id, first_name, last_name, middle_name, gender "
+        "FROM students WHERE section_id=? AND enrollment_status=\'Enrolled\' "
+        "ORDER BY last_name, first_name", (sec_id,)
+    ).fetchall()
+    # All attendance events for this section+subject by this teacher, ordered by date
+    events = conn.execute(
+        "SELECT id, title, event_date, time_start, late_allowance_minutes "
+        "FROM attendance_events "
+        "WHERE section_id=? AND subject_id=? AND teacher_id=? AND event_type=\'class\' "
+        "ORDER BY event_date ASC, id ASC",
+        (sec_id, sub_id, tid)
+    ).fetchall()
+    # All attendance records for these events
+    event_ids = [e['id'] for e in events]
+    records = {}
+    if event_ids:
+        placeholders = ','.join('?' * len(event_ids))
+        rows = conn.execute(
+            f"SELECT event_id, student_id, status FROM attendance_records "
+            f"WHERE event_id IN ({placeholders})", event_ids
+        ).fetchall()
+        for r in rows:
+            records[(r['event_id'], r['student_id'])] = r['status']
+    conn.close()
+    return render_template('teacher_attendance_sheet.html',
+                           section=section, subject=subject,
+                           students=students, events=events, records=records,
+                           sec_id=sec_id, sub_id=sub_id)
+
+
+@app.route('/teacher/attendance/section/<int:sec_id>/subject/<int:sub_id>/add_event', methods=['POST'])
+@teacher_required
+def teacher_add_attendance_event(sec_id, sub_id):
+    tid = session['teacher_id']
+    d   = request.form
+    conn = get_db()
+    assigned = conn.execute(
+        "SELECT id FROM schedules WHERE teacher_id=? AND section_id=? AND subject_id=?",
+        (tid, sec_id, sub_id)
+    ).fetchone()
+    if not assigned:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Not authorized'}), 403
+    try:
+        late_mins = int(d.get('late_allowance_minutes') or 0)
+    except (ValueError, TypeError):
+        late_mins = 0
+    conn.execute(
+        "INSERT INTO attendance_events (title,event_type,event_date,time_start,time_end,"
+        "late_allowance_minutes,section_id,subject_id,teacher_id,created_by) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (d['title'].strip(), 'class', d['event_date'],
+         d.get('time_start','').strip() or None,
+         d.get('time_end','').strip() or None,
+         late_mins, sec_id, sub_id, tid,
+         session.get('teacher_name','Teacher'))
+    )
+    eid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'event_id': eid})
+
+
+@app.route('/teacher/attendance/event/<int:eid>/set_status', methods=['POST'])
+@teacher_required
+def teacher_set_status(eid):
+    tid = session['teacher_id']
+    d   = request.get_json(force=True) or {}
+    student_id = d.get('student_id')
+    status     = d.get('status')
+    if status not in ('Present','Absent','Excused','Late'):
+        return jsonify({'ok': False, 'error': 'Invalid status'}), 400
+    conn = get_db()
+    event = conn.execute(
+        "SELECT id FROM attendance_events WHERE id=? AND teacher_id=?", (eid, tid)
+    ).fetchone()
+    if not event:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Not authorized'}), 403
+    conn.execute(
+        "INSERT INTO attendance_records (event_id,student_id,status) VALUES (?,?,?) "
+        "ON CONFLICT(event_id,student_id) DO UPDATE SET "
+        "status=excluded.status,recorded_at=datetime(\'now\')",
+        (eid, student_id, status)
+    )
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/teacher/attendance/event/<int:eid>/delete_event', methods=['POST'])
+@teacher_required
+def teacher_delete_attendance_event(eid):
+    tid = session['teacher_id']
+    conn = get_db()
+    event = conn.execute(
+        "SELECT section_id, subject_id FROM attendance_events WHERE id=? AND teacher_id=?", (eid, tid)
+    ).fetchone()
+    if not event:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Not authorized'}), 403
+    sec_id = event['section_id']
+    sub_id = event['subject_id']
+    conn.execute("DELETE FROM attendance_events WHERE id=?", (eid,))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/teacher/attendance/event/<int:eid>')
+@teacher_required
+def teacher_attendance_event(eid):
+    tid  = session['teacher_id']
+    conn = get_db()
+    # Allow teacher if they own it OR if they are in authorized persons list
+    event = conn.execute(
+        "SELECT ae.*, sec.section_name, sec.grade_level, sub.subject_name, sub.subject_code "
+        "FROM attendance_events ae "
+        "LEFT JOIN sections sec ON ae.section_id=sec.id "
+        "LEFT JOIN subjects sub ON ae.subject_id=sub.id "
+        "WHERE ae.id=? AND ae.event_type=\'class\' "
+        "AND (ae.teacher_id=? OR EXISTS("
+        "  SELECT 1 FROM attendance_authorized aa "
+        "  WHERE aa.event_id=ae.id AND aa.person_type=\'teacher\' AND aa.person_id=?))",
+        (eid, tid, tid)
+    ).fetchone()
+    if not event:
+        flash('Event not found or not authorized.', 'danger')
+        return redirect(url_for('teacher_attendance_home'))
+    students = conn.execute(
+        "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name, s.gender "
+        "FROM students s WHERE s.section_id=? AND s.enrollment_status=\'Enrolled\' "
+        "ORDER BY s.last_name, s.first_name", (event['section_id'],)
+    ).fetchall()
+    records = conn.execute(
+        "SELECT student_id, status, note FROM attendance_records WHERE event_id=?", (eid,)
+    ).fetchall()
+    record_map  = {r['student_id']: r for r in records}
+    summary     = attendance_summary(conn, eid)
+    authorized  = conn.execute(
+        "SELECT person_type, person_id FROM attendance_authorized WHERE event_id=?", (eid,)
+    ).fetchall()
+    conn.close()
+    return render_template('teacher_attendance_event.html', event=event,
+                           students=students, record_map=record_map,
+                           summary=summary, authorized=authorized)
+
+
+@app.route('/teacher/attendance/event/<int:eid>/scan', methods=['POST'])
+@teacher_required
+def teacher_scan_attendance(eid):
+    from datetime import datetime, timedelta
+    tid  = session['teacher_id']
+    d    = request.get_json(force=True) or {}
+    sid_str = (d.get('student_id') or '').strip()
+    conn = get_db()
+    event = conn.execute(
+        "SELECT time_start, late_allowance_minutes, section_id FROM attendance_events WHERE id=?", (eid,)
+    ).fetchone()
+    if not event:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Event not found.'})
+    student = conn.execute(
+        "SELECT id, first_name, last_name, middle_name FROM students WHERE student_id=?", (sid_str,)
+    ).fetchone()
+    if not student:
+        conn.close()
+        return jsonify({'ok': False, 'error': f'Student ID "{sid_str}" not found.'})
+    # Auto-determine status
+    status = 'Present'
+    time_info = ''
+    if event['time_start']:
+        try:
+            now        = datetime.now()
+            time_start = datetime.strptime(event['time_start'], '%H:%M').replace(
+                             year=now.year, month=now.month, day=now.day)
+            allowance  = int(event['late_allowance_minutes'] or 0)
+            cutoff     = time_start + timedelta(minutes=allowance)
+            if now > cutoff:
+                status = 'Late'
+            time_info = now.strftime('%I:%M %p')
+        except Exception:
+            pass
+    conn.execute(
+        "INSERT INTO attendance_records (event_id,student_id,status) VALUES (?,?,?) "
+        "ON CONFLICT(event_id,student_id) DO UPDATE SET "
+        "status=excluded.status,recorded_at=datetime(\'now\')",
+        (eid, student['id'], status)
+    )
+    conn.commit(); conn.close()
+    mn = clean_middle_name(student['middle_name'] or '')
+    mi = f' {mn[0].upper()}.' if mn else ''
+    full_name = f"{student['last_name']}, {student['first_name']}{mi}"
+    return jsonify({'ok': True, 'name': full_name, 'status': status,
+                   'time_info': time_info, 'student_db_id': student['id']})
+
+
+@app.route('/teacher/attendance/event/<int:eid>/save', methods=['POST'])
+@teacher_required
+def teacher_save_attendance(eid):
+    tid  = session['teacher_id']
+    conn = get_db()
+    event = conn.execute(
+        "SELECT id FROM attendance_events WHERE id=? AND teacher_id=?", (eid, tid)
+    ).fetchone()
+    if not event:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Not authorized'}), 403
+    d = request.get_json(force=True) or {}
+    for rec in d.get('records', []):
+        sid = rec.get('student_id')
+        status = rec.get('status', 'Present')
+        note = (rec.get('note') or '').strip() or None
+        if not sid or status not in ('Present','Absent','Excused','Late'):
+            continue
+        conn.execute(
+            "INSERT INTO attendance_records (event_id,student_id,status,note) VALUES (?,?,?,?) "
+            "ON CONFLICT(event_id,student_id) DO UPDATE SET "
+            "status=excluded.status,note=excluded.note,recorded_at=datetime(\'now\')",
+            (eid, sid, status, note)
+        )
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/teacher/attendance/event/<int:eid>/delete', methods=['POST'])
+@teacher_required
+def teacher_delete_attendance(eid):
+    tid = session['teacher_id']
+    conn = get_db()
+    conn.execute("DELETE FROM attendance_events WHERE id=? AND teacher_id=?", (eid, tid))
+    conn.commit(); conn.close()
+    flash('Attendance record deleted.', 'success')
+    return redirect(url_for('teacher_attendance_home'))
+
+
+# ── STUDENT: View attendance ──
+
+@app.route('/student/attendance/event/<int:eid>/take')
+@student_required
+def student_take_attendance(eid):
+    from datetime import datetime, timedelta
+    sid = session['student_session_id']
+    conn = get_db()
+    authorized = conn.execute(
+        "SELECT 1 FROM attendance_authorized WHERE event_id=? AND person_type=\'student\' AND person_id=?",
+        (eid, sid)
+    ).fetchone()
+    event = conn.execute(
+        "SELECT ae.*, ac.name AS category_name, ac.color AS category_color, ac.icon AS category_icon "
+        "FROM attendance_events ae "
+        "LEFT JOIN attendance_categories ac ON ae.category_id=ac.id "
+        "WHERE ae.id=? AND ae.event_type=\'school\'", (eid,)
+    ).fetchone()
+    if not event or not authorized:
+        flash('You are not authorized to take attendance for this event.', 'danger')
+        conn.close()
+        return redirect(url_for('student_attendance'))
+    from datetime import datetime as _dt2
+    now_hm = _dt2.now().strftime('%H:%M')
+    event_closed = bool(event['time_end'] and now_hm > event['time_end'])
+    if event['recorded_scope'] == 'all':
+        students = conn.execute(
+            "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name, s.gender,"
+            " sec.section_name FROM students s "
+            "LEFT JOIN sections sec ON s.section_id=sec.id "
+            "WHERE s.enrollment_status=\'Enrolled\' ORDER BY s.last_name, s.first_name"
+        ).fetchall()
+    elif event['recorded_scope'] == 'authorized_only':
+        students = conn.execute(
+            "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name, s.gender,"
+            " sec.section_name FROM attendance_authorized aa"
+            " JOIN students s ON aa.person_id=s.id"
+            " LEFT JOIN sections sec ON s.section_id=sec.id"
+            " WHERE aa.event_id=? AND aa.person_type=\'student\'"
+            " ORDER BY s.last_name, s.first_name", (eid,)
+        ).fetchall()
+    else:
+        students = []
+    records = conn.execute(
+        "SELECT student_id, status, note FROM attendance_records WHERE event_id=?", (eid,)
+    ).fetchall()
+    record_map = {r['student_id']: r for r in records}
+    summary = attendance_summary(conn, eid)
+    conn.close()
+    return render_template('student_take_attendance.html', event=event,
+                           students=students, record_map=record_map, summary=summary,
+                           event_closed=event_closed)
+
+
+@app.route('/student/attendance/event/<int:eid>/scan', methods=['POST'])
+@student_required
+def student_scan_attendance(eid):
+    from datetime import datetime, timedelta
+    sid = session['student_session_id']
+    d   = request.get_json(force=True) or {}
+    sid_str = (d.get('student_id') or '').strip()
+    conn = get_db()
+    authorized = conn.execute(
+        "SELECT 1 FROM attendance_authorized WHERE event_id=? AND person_type=\'student\' AND person_id=?",
+        (eid, sid)
+    ).fetchone()
+    event = conn.execute(
+        "SELECT time_start, time_end, late_allowance_minutes, recorded_scope, attendee_positions, attendee_org_ids FROM attendance_events WHERE id=?", (eid,)
+    ).fetchone()
+    if not authorized or not event:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Not authorized.'}), 403
+    from datetime import datetime as _dt3
+    if event['time_end']:
+        if _dt3.now().strftime('%H:%M') > event['time_end']:
+            conn.close()
+            return jsonify({'ok': False, 'error': f'This event ended at {event["time_end"]}. Scanning is closed.'})
+    student = conn.execute(
+        "SELECT id, first_name, last_name, middle_name FROM students WHERE student_id=?", (sid_str,)
+    ).fetchone()
+    if not student:
+        conn.close()
+        return jsonify({'ok': False, 'error': f'Student ID "{sid_str}" not found.'})
+    status = 'Present'
+    time_info = ''
+    if event['time_start']:
+        try:
+            now = datetime.now()
+            ts  = datetime.strptime(event['time_start'], '%H:%M').replace(year=now.year, month=now.month, day=now.day)
+            cutoff = ts + timedelta(minutes=int(event['late_allowance_minutes'] or 0))
+            if now > cutoff: status = 'Late'
+            time_info = now.strftime('%I:%M %p')
+        except Exception:
+            pass
+    conn.execute(
+        "INSERT INTO attendance_records (event_id,student_id,status) VALUES (?,?,?)"
+        " ON CONFLICT(event_id,student_id) DO UPDATE SET status=excluded.status,recorded_at=datetime(\'now\')",
+        (eid, student['id'], status)
+    )
+    conn.commit(); conn.close()
+    mn = clean_middle_name(student['middle_name'] or '')
+    mi = f' {mn[0].upper()}.' if mn else ''
+    return jsonify({'ok': True, 'name': f"{student['last_name']}, {student['first_name']}{mi}",
+                   'status': status, 'time_info': time_info, 'student_db_id': student['id']})
+
+
+@app.route('/student/attendance/event/<int:eid>/save_auth', methods=['POST'])
+@student_required
+def student_save_attendance_authorized(eid):
+    sid = session['student_session_id']
+    d   = request.get_json(force=True) or {}
+    conn = get_db()
+    authorized = conn.execute(
+        "SELECT 1 FROM attendance_authorized WHERE event_id=? AND person_type=\'student\' AND person_id=?",
+        (eid, sid)
+    ).fetchone()
+    if not authorized:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Not authorized.'}), 403
+    for rec in d.get('records', []):
+        s = rec.get('student_id')
+        status = rec.get('status', 'Present')
+        note   = (rec.get('note') or '').strip() or None
+        if not s or status not in ('Present','Absent','Excused','Late'): continue
+        conn.execute(
+            "INSERT INTO attendance_records (event_id,student_id,status,note) VALUES (?,?,?,?)"
+            " ON CONFLICT(event_id,student_id) DO UPDATE SET status=excluded.status,note=excluded.note,recorded_at=datetime(\'now\')",
+            (eid, s, status, note)
+        )
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+# ── SSG Secretary General attendance management ──────────────
+
+def ssg_secretary_required(f):
+    """Decorator: only SSG Secretary General students can access."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('is_secretary_general'):
+            flash('Access restricted to SSG Secretary General.', 'danger')
+            return redirect(url_for('student_attendance'))
+        return f(*args, **kwargs)
+    return decorated
+
+
+@app.route('/student/attendance/categories')
+@student_required
+@ssg_secretary_required
+def ssg_attendance_categories():
+    conn = get_db()
+    sid = session['student_session_id']
+    # Own categories + admin-shared categories
+    categories = conn.execute(
+        "SELECT * FROM attendance_categories ORDER BY name"
+    ).fetchall()
+    conn.close()
+    return render_template('ssg_attendance_categories.html', categories=categories)
+
+
+@app.route('/student/attendance/categories/add', methods=['POST'])
+@student_required
+@ssg_secretary_required
+def ssg_add_attendance_category():
+    d = request.form
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO attendance_categories (name,description,color,icon,created_by_student)"
+            " VALUES (?,?,?,?,?)",
+            (d['name'].strip(), d.get('description','').strip() or None,
+             d.get('color','#3b82f6'), d.get('icon','🎯'),
+             session['student_session_id'])
+        )
+        conn.commit()
+        flash('Category created.', 'success')
+    except Exception as e:
+        flash(f'Error: {e}', 'danger')
+    finally:
+        conn.close()
+    return redirect(url_for('ssg_attendance_categories'))
+
+
+@app.route('/student/attendance/events/create', methods=['GET','POST'])
+@student_required
+@ssg_secretary_required
+def ssg_create_attendance_event():
+    conn = get_db()
+    sid = session['student_session_id']
+    if request.method == 'POST':
+        d = request.form
+        try:
+            late_mins = int(d.get('late_allowance_minutes') or 0)
+        except Exception:
+            late_mins = 0
+        is_compulsory      = 1 if d.get('is_compulsory','1') == '1' else 0
+        recorded_scope     = d.get('recorded_scope', 'all')
+        attendee_positions = ','.join(request.form.getlist('attendee_positions')) or None
+        attendee_org_ids   = ','.join(request.form.getlist('attendee_org_ids'))   or None
+        # Only allow categories created by this student or shared by admin (shared_to_student=1)
+        cat_id = d.get('category_id') or None
+        if cat_id:
+            allowed_cat = conn.execute(
+                "SELECT id FROM attendance_categories WHERE id=?"
+                " AND (created_by_student=? OR is_shared=1)",
+                (cat_id, sid)
+            ).fetchone()
+            if not allowed_cat:
+                flash('You can only use your own categories or shared categories.', 'danger')
+                conn.close()
+                return redirect(url_for('ssg_create_attendance_event'))
+        conn.execute(
+            "INSERT INTO attendance_events"
+            " (title,event_type,event_date,time_start,time_end,late_allowance_minutes,"
+            "  is_compulsory,recorded_scope,attendee_positions,attendee_org_ids,"
+            "  description,category_id,created_by)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (d['title'].strip(), 'school', d['event_date'],
+             d.get('time_start','').strip() or None,
+             d.get('time_end','').strip() or None,
+             late_mins, is_compulsory, recorded_scope, attendee_positions, attendee_org_ids,
+             d.get('description','').strip() or None, cat_id,
+             f"SSG:{session['student_name']}")
+        )
+        eid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # Save authorized scanners
+        for person_id in request.form.getlist('authorized_student_ids'):
+            if person_id:
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO attendance_authorized (event_id,person_type,person_id) VALUES (?,?,?)",
+                        (eid, 'student', int(person_id))
+                    )
+                except Exception: pass
+        conn.commit()
+        flash('Attendance event created.', 'success')
+        conn.close()
+        return redirect(url_for('student_attendance'))
+    # GET
+    sid_student = session['student_session_id']
+    categories = conn.execute(
+        "SELECT * FROM attendance_categories WHERE created_by_student=? OR is_shared=1 ORDER BY name",
+        (sid_student,)
+    ).fetchall()
+    all_positions_data = conn.execute(
+        "SELECT DISTINCT op.position_name, o.name AS org_name, o.org_type, o.id AS org_id"
+        " FROM org_positions op JOIN organizations o ON op.org_id=o.id"
+        " ORDER BY o.org_type DESC, op.rank_order, op.position_name"
+    ).fetchall()
+    conn.close()
+    return render_template('ssg_create_event.html', categories=categories,
+                           all_positions_data=[dict(r) for r in all_positions_data])
+
+
+@app.route('/student/attendance')
+@student_required
+def student_attendance():
+    sid = session['student_session_id']
+    conn = get_db()
+    student = conn.execute("SELECT id, section_id FROM students WHERE id=?", (sid,)).fetchone()
+    school_events = conn.execute(
+        "SELECT ae.id, ae.title, ae.event_date, ae.description, ae.is_compulsory, ar.status, ar.note "
+        "FROM attendance_events ae "
+        "LEFT JOIN attendance_records ar ON ar.event_id=ae.id AND ar.student_id=? "
+        "WHERE ae.event_type=\'school\' ORDER BY ae.event_date DESC", (sid,)
+    ).fetchall()
+    class_events = conn.execute(
+        "SELECT ae.id, ae.title, ae.event_date, ae.description, "
+        "sub.subject_name, sub.subject_code, ar.status, ar.note "
+        "FROM attendance_events ae "
+        "LEFT JOIN subjects sub ON ae.subject_id=sub.id "
+        "LEFT JOIN attendance_records ar ON ar.event_id=ae.id AND ar.student_id=? "
+        "WHERE ae.event_type=\'class\' AND ae.section_id=? "
+        "ORDER BY ae.event_date DESC",
+        (sid, student['section_id'] or -1)
+    ).fetchall()
+    authorized_events = conn.execute(
+        "SELECT ae.id, ae.title, ae.event_date, ae.time_start, ae.time_end "
+        "FROM attendance_events ae "
+        "JOIN attendance_authorized aa ON aa.event_id=ae.id "
+        "WHERE aa.person_type=\'student\' AND aa.person_id=? AND ae.event_type=\'school\' "
+        "ORDER BY ae.event_date DESC", (sid,)
+    ).fetchall()
+    conn.close()
+    from datetime import datetime as _dt4
+    conn.close()
+    return render_template('student_attendance.html',
+                           school_events=school_events, class_events=class_events,
+                           authorized_events=authorized_events,
+                           now_hm=_dt4.now().strftime('%H:%M'))
+
+
+@app.route('/student/attendance/event/<int:eid>')
+@student_required
+def student_attendance_event(eid):
+    sid = session['student_session_id']
+    conn = get_db()
+    student = conn.execute("SELECT id, section_id FROM students WHERE id=?", (sid,)).fetchone()
+    event = conn.execute(
+        "SELECT ae.*, sec.section_name, sub.subject_name, sub.subject_code "
+        "FROM attendance_events ae "
+        "LEFT JOIN sections sec ON ae.section_id=sec.id "
+        "LEFT JOIN subjects sub ON ae.subject_id=sub.id "
+        "WHERE ae.id=? AND (ae.event_type=\'school\' OR ae.section_id=?)",
+        (eid, student['section_id'] or -1)
+    ).fetchone()
+    if not event:
+        flash('Event not found.', 'danger')
+        return redirect(url_for('student_attendance'))
+    record = conn.execute(
+        "SELECT status, note, recorded_at FROM attendance_records WHERE event_id=? AND student_id=?",
+        (eid, sid)
+    ).fetchone()
+    summary = attendance_summary(conn, eid)
+    conn.close()
+    return render_template('student_attendance_event.html',
+                           event=event, record=record, summary=summary)
+
+
+# ══════════════════════════════════════════════════════════════
+# ── ATTENDANCE CATEGORIES
+# ══════════════════════════════════════════════════════════════
+
+@app.route('/attendance/categories')
+@login_required
+def attendance_categories():
+    conn = get_db()
+    cats = conn.execute(
+        "SELECT ac.*, COUNT(ae.id) AS event_count"
+        " FROM attendance_categories ac"
+        " LEFT JOIN attendance_events ae ON ae.category_id=ac.id"
+        " GROUP BY ac.id ORDER BY ac.name"
+    ).fetchall()
+    conn.close()
+    return render_template('attendance_categories.html', categories=cats)
+
+@app.route('/attendance/categories/add', methods=['POST'])
+@login_required
+def add_attendance_category():
+    d = request.form
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO attendance_categories (name,description,color,icon) VALUES (?,?,?,?)",
+            (d['name'].strip(), d.get('description','').strip() or None,
+             d.get('color','#6b7280'), d.get('icon','🎯'))
+        )
+        conn.commit()
+        flash('Category added.', 'success')
+    except Exception as e:
+        flash(f'Error: {e}', 'danger')
+    finally:
+        conn.close()
+    return redirect(url_for('attendance_categories'))
+
+@app.route('/attendance/categories/edit/<int:cid>', methods=['POST'])
+@login_required
+def edit_attendance_category(cid):
+    d = request.form
+    conn = get_db()
+    conn.execute(
+        "UPDATE attendance_categories SET name=?,description=?,color=?,icon=? WHERE id=?",
+        (d['name'].strip(), d.get('description','').strip() or None,
+         d.get('color','#6b7280'), d.get('icon','🎯'), cid)
+    )
+    conn.commit(); conn.close()
+    flash('Category updated.', 'success')
+    return redirect(url_for('attendance_categories'))
+
+@app.route('/attendance/categories/share/<int:cid>', methods=['POST'])
+@login_required
+def share_attendance_category(cid):
+    conn = get_db()
+    current = conn.execute("SELECT is_shared FROM attendance_categories WHERE id=?", (cid,)).fetchone()
+    if current:
+        new_val = 0 if current['is_shared'] else 1
+        conn.execute("UPDATE attendance_categories SET is_shared=? WHERE id=?", (new_val, cid))
+        conn.commit()
+        flash('Category ' + ('shared with SSG Secretary General.' if new_val else 'unshared.'), 'success')
+    conn.close()
+    return redirect(url_for('attendance_categories'))
+
+
+@app.route('/attendance/categories/delete/<int:cid>', methods=['POST'])
+@login_required
+def delete_attendance_category(cid):
+    conn = get_db()
+    conn.execute("DELETE FROM attendance_categories WHERE id=?", (cid,))
+    conn.commit(); conn.close()
+    flash('Category deleted.', 'success')
+    return redirect(url_for('attendance_categories'))
+
+@app.route('/attendance/categories/get/<int:cid>')
+@login_required
+def get_attendance_category(cid):
+    conn = get_db()
+    c = conn.execute("SELECT * FROM attendance_categories WHERE id=?", (cid,)).fetchone()
+    conn.close()
+    return jsonify(dict(c)) if c else (jsonify({}), 404)
+
+
+# ══════════════════════════════════════════════════════════════
+# ── ORGANIZATIONS & POSITIONS
+# ══════════════════════════════════════════════════════════════
+
+@app.route('/organizations')
+@login_required
+def organizations():
+    conn = get_db()
+    # Auto-create Supreme Student Government with standard + dynamic positions
+    auto_create_ssg(conn)
+
+    # Auto-create section officer orgs for all sections
+    sections_all = conn.execute("SELECT id, section_name, grade_level FROM sections ORDER BY grade_level, section_name").fetchall()
+    for sec in sections_all:
+        org_name = f"Section Officers — {sec['section_name']} (Grade {sec['grade_level']})"
+        exists = conn.execute("SELECT id FROM organizations WHERE org_type='section' AND name=?", (org_name,)).fetchone()
+        if not exists:
+            conn.execute(
+                "INSERT INTO organizations (name,short_name,org_type,color) VALUES (?,?,?,?)",
+                (org_name, sec['section_name'], 'section', '#8b5cf6')
+            )
+            oid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            # Only add standard positions on first creation — never re-add deleted ones
+            for rank, pos in enumerate(STANDARD_SECTION_OFFICES_UNIQUE):
+                conn.execute("INSERT OR IGNORE INTO org_positions (org_id,position_name,rank_order) VALUES (?,?,?)", (oid, pos, rank))
+            # Note: 2 people can hold "Protocol Officer" — same position row, 2 org_members entries
+        # If already exists, do NOT touch positions
+    conn.commit()
+    ssg = conn.execute(
+        "SELECT o.*, COUNT(DISTINCT om.id) AS member_count"
+        " FROM organizations o"
+        " LEFT JOIN org_members om ON om.org_id=o.id AND om.is_active=1"
+        " WHERE o.org_type='government'"
+        " GROUP BY o.id ORDER BY o.name"
+    ).fetchall()
+    orgs = conn.execute(
+        "SELECT o.*, COUNT(DISTINCT om.id) AS member_count"
+        " FROM organizations o"
+        " LEFT JOIN org_members om ON om.org_id=o.id AND om.is_active=1"
+        " WHERE o.org_type NOT IN ('section','government')"
+        " GROUP BY o.id ORDER BY o.name"
+    ).fetchall()
+    section_orgs = conn.execute(
+        "SELECT o.*, COUNT(DISTINCT om.id) AS member_count,"
+        " s.id AS sec_id, s.grade_level, s.section_name AS sec_name"
+        " FROM organizations o"
+        " LEFT JOIN org_members om ON om.org_id=o.id AND om.is_active=1"
+        " LEFT JOIN sections s ON o.name = ('Section Officers — '||s.section_name||' (Grade '||s.grade_level||')')"
+        " WHERE o.org_type='section'"
+        " GROUP BY o.id ORDER BY s.grade_level, s.section_name"
+    ).fetchall()
+    conn.close()
+    return render_template('organizations.html', orgs=orgs, section_orgs=section_orgs, ssg=ssg)
+
+@app.route('/organizations/add', methods=['POST'])
+@login_required
+def add_organization():
+    d = request.form
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO organizations (name,short_name,description,org_type,color) VALUES (?,?,?,?,?)",
+            (d['name'].strip(), d.get('short_name','').strip() or None,
+             d.get('description','').strip() or None,
+             d.get('org_type','organization'), d.get('color','#3b82f6'))
+        )
+        conn.commit()
+        flash('Organization added.', 'success')
+    except Exception as e:
+        flash(f'Error: {e}', 'danger')
+    finally:
+        conn.close()
+    return redirect(url_for('organizations'))
+
+@app.route('/organizations/edit/<int:oid>', methods=['POST'])
+@login_required
+def edit_organization(oid):
+    d = request.form
+    conn = get_db()
+    conn.execute(
+        "UPDATE organizations SET name=?,short_name=?,description=?,org_type=?,color=? WHERE id=?",
+        (d['name'].strip(), d.get('short_name','').strip() or None,
+         d.get('description','').strip() or None,
+         d.get('org_type','organization'), d.get('color','#3b82f6'), oid)
+    )
+    conn.commit(); conn.close()
+    flash('Organization updated.', 'success')
+    return redirect(url_for('organizations'))
+
+@app.route('/organizations/delete/<int:oid>', methods=['POST'])
+@login_required
+def delete_organization(oid):
+    conn = get_db()
+    conn.execute("DELETE FROM organizations WHERE id=?", (oid,))
+    conn.commit(); conn.close()
+    flash('Organization deleted.', 'success')
+    return redirect(url_for('organizations'))
+
+@app.route('/organizations/get/<int:oid>')
+@login_required
+def get_organization(oid):
+    conn = get_db()
+    o = conn.execute("SELECT * FROM organizations WHERE id=?", (oid,)).fetchone()
+    conn.close()
+    return jsonify(dict(o)) if o else (jsonify({}), 404)
+
+@app.route('/organizations/<int:oid>')
+@login_required
+def organization_detail(oid):
+    conn = get_db()
+    org = conn.execute("SELECT * FROM organizations WHERE id=?", (oid,)).fetchone()
+    if not org:
+        flash('Organization not found.', 'danger')
+        return redirect(url_for('organizations'))
+    # Patch SSG positions if viewing the government org
+    if org['org_type'] == 'government':
+        auto_create_ssg(conn)
+        org = conn.execute("SELECT * FROM organizations WHERE id=?", (oid,)).fetchone()
+
+    positions = conn.execute(
+        "SELECT op.*, COUNT(om.id) AS member_count"
+        " FROM org_positions op"
+        " LEFT JOIN org_members om ON om.position_id=op.id AND om.is_active=1"
+        " WHERE op.org_id=? GROUP BY op.id ORDER BY op.rank_order, op.position_name",
+        (oid,)
+    ).fetchall()
+    # Pre-group positions for government org view
+    exec_positions   = [p for p in positions if p['position_name'] in STANDARD_SSG_OFFICES_NAMES]
+    strand_positions = [p for p in positions if p['position_name'].startswith('Strand Governor')]
+    grade_positions  = [p for p in positions if p['position_name'].startswith('Grade') and p['position_name'].endswith('Representative')]
+    members = conn.execute(
+        "SELECT om.id AS member_row_id, om.school_year, om.is_active,"
+        " s.id AS student_db_id, s.first_name, s.last_name, s.middle_name,"
+        " s.student_id AS sid_code, s.gender,"
+        " op.position_name, op.rank_order,"
+        " sec.section_name, sec.grade_level"
+        " FROM org_members om"
+        " JOIN students s ON om.student_id=s.id"
+        " LEFT JOIN org_positions op ON om.position_id=op.id"
+        " LEFT JOIN sections sec ON s.section_id=sec.id"
+        " WHERE om.org_id=? AND om.is_active=1"
+        " ORDER BY op.rank_order NULLS LAST, s.last_name, s.first_name",
+        (oid,)
+    ).fetchall()
+    # ── Student eligibility rules ──────────────────────────────
+    # Get IDs of students already holding SSG executive positions
+    ssg_exec_ids = set()
+    ssg_org = conn.execute(
+        "SELECT id FROM organizations WHERE org_type='government'", ()
+    ).fetchone()
+    if ssg_org:
+        ssg_exec_rows = conn.execute(
+            "SELECT DISTINCT om.student_id FROM org_members om"
+            " JOIN org_positions op ON om.position_id=op.id"
+            " WHERE om.org_id=? AND om.is_active=1"
+            " AND op.position_name IN ({})".format(
+                ','.join('?' * len(STANDARD_SSG_OFFICES_NAMES))
+            ),
+            [ssg_org['id']] + STANDARD_SSG_OFFICES_NAMES
+        ).fetchall()
+        ssg_exec_ids = {r['student_id'] for r in ssg_exec_rows}
+
+    # Build per-position eligible student lists
+    # all_students_base: full enrolled list minus SSG execs (for non-SSG orgs)
+    def exclude_ssg(rows):
+        return [r for r in rows if r['id'] not in ssg_exec_ids]
+
+    if org['org_type'] == 'government':
+        # SSG execs: all enrolled, no restriction (they ARE the execs)
+        all_students = conn.execute(
+            "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name"
+            " FROM students s WHERE s.enrollment_status='Enrolled'"
+            " ORDER BY s.last_name, s.first_name"
+        ).fetchall()
+        # Strand-scoped lists for strand rep positions
+        strand_students = {}
+        for sp in strand_positions:
+            # Extract strand code from "Strand Representative — STEM (Science...)"
+            import re
+            m = re.match(r"Strand Governor — (\S+)", sp['position_name'])
+            if m:
+                scode = m.group(1)
+                rows = conn.execute(
+                    "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name"
+                    " FROM students s"
+                    " JOIN strands st ON s.strand_id=st.id"
+                    " WHERE st.strand_code=? AND s.enrollment_status='Enrolled'"
+                    " ORDER BY s.last_name, s.first_name", (scode,)
+                ).fetchall()
+                filtered_s = exclude_ssg(rows)
+                strand_students[sp['id']] = filtered_s if filtered_s else list(rows)
+            else:
+                strand_students[sp['id']] = []
+        # Grade-scoped lists for grade rep positions
+        grade_students = {}
+        for gp in grade_positions:
+            import re
+            m = re.match(r"Grade (.+) Representative", gp['position_name'])
+            if m:
+                glevel_num = m.group(1).strip()  # e.g. "11"
+                # DB stores grade_level as "Grade 11" or just "11" — match both
+                rows = conn.execute(
+                    "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name"
+                    " FROM students s"
+                    " WHERE (s.grade_level=? OR s.grade_level=?)"
+                    " AND s.enrollment_status='Enrolled'"
+                    " ORDER BY s.last_name, s.first_name",
+                    (glevel_num, f"Grade {glevel_num}")
+                ).fetchall()
+                filtered_g = exclude_ssg(rows)
+                grade_students[gp['id']] = filtered_g if filtered_g else list(rows)
+            else:
+                grade_students[gp['id']] = []
+    elif org['org_type'] == 'section':
+        # Section officers: only students in that section, no SSG execs
+        linked_section = conn.execute(
+            "SELECT s.* FROM sections s"
+            " WHERE ('Section Officers — '||s.section_name||' (Grade '||s.grade_level||')') = ?",
+            (org['name'],)
+        ).fetchone()
+        if linked_section:
+            rows = conn.execute(
+                "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name"
+                " FROM students s WHERE s.section_id=? AND s.enrollment_status='Enrolled'"
+                " ORDER BY s.last_name, s.first_name", (linked_section['id'],)
+            ).fetchall()
+            filtered = exclude_ssg(rows)
+            # If SSG exclusion removed everyone, fall back to full list
+            all_students = filtered if filtered else list(rows)
+        else:
+            all_students = exclude_ssg(conn.execute(
+                "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name"
+                " FROM students s WHERE s.enrollment_status='Enrolled' ORDER BY s.last_name, s.first_name"
+            ).fetchall())
+        strand_students = {}
+        grade_students  = {}
+    else:
+        rows = conn.execute(
+            "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name"
+            " FROM students s WHERE s.enrollment_status='Enrolled' ORDER BY s.last_name, s.first_name"
+        ).fetchall()
+        filtered = exclude_ssg(rows)
+        all_students = filtered if filtered else list(rows)
+        strand_students = {}
+        grade_students  = {}
+
+    conn.close()
+    return render_template('organization_detail.html', org=org, positions=positions,
+                           members=members, all_students=all_students,
+                           standard_offices=STANDARD_SECTION_OFFICES_UNIQUE,
+                           exec_positions=exec_positions,
+                           strand_positions=strand_positions,
+                           grade_positions=grade_positions,
+                           strand_students=strand_students,
+                           grade_students=grade_students,
+                           ssg_exec_ids=list(ssg_exec_ids))
+
+@app.route('/organizations/<int:oid>/add_position', methods=['POST'])
+@login_required
+def add_org_position(oid):
+    d = request.form
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO org_positions (org_id,position_name,rank_order) VALUES (?,?,?)",
+            (oid, d['position_name'].strip(), int(d.get('rank_order') or 0))
+        )
+        conn.commit()
+        flash('Position added.', 'success')
+    except Exception as e:
+        flash(f'Error: {e}', 'danger')
+    finally:
+        conn.close()
+    return redirect(url_for('organization_detail', oid=oid))
+
+
+@app.route('/organizations/<int:oid>/delete_position/<int:pid>', methods=['POST'])
+@login_required
+def delete_org_position(oid, pid):
+    conn = get_db()
+    conn.execute("DELETE FROM org_positions WHERE id=? AND org_id=?", (pid, oid))
+    conn.commit(); conn.close()
+    flash('Position deleted.', 'success')
+    return redirect(url_for('organization_detail', oid=oid))
+
+@app.route('/organizations/<int:oid>/generate_positions', methods=['POST'])
+@login_required
+def generate_section_positions(oid):
+    """Generate standard positions for a single section org (only adds missing ones)."""
+    conn = get_db()
+    org = conn.execute("SELECT org_type FROM organizations WHERE id=?", (oid,)).fetchone()
+    if not org or org['org_type'] != 'section':
+        flash('Not a section organization.', 'danger')
+        conn.close()
+        return redirect(url_for('organizations'))
+    added = 0
+    for rank, pos in enumerate(STANDARD_SECTION_OFFICES_UNIQUE):
+        existing = conn.execute(
+            "SELECT id FROM org_positions WHERE org_id=? AND position_name=?", (oid, pos)
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO org_positions (org_id,position_name,rank_order) VALUES (?,?,?)",
+                (oid, pos, rank)
+            )
+            added += 1
+    conn.commit(); conn.close()
+    if added:
+        flash(f'{added} position(s) generated.', 'success')
+    else:
+        flash('All standard positions already exist.', 'warning')
+    return redirect(url_for('organizations'))
+
+
+@app.route('/organizations/generate_all_sections', methods=['POST'])
+@login_required
+def generate_all_section_positions():
+    """Generate standard positions for ALL section orgs that are missing them."""
+    conn = get_db()
+    section_orgs = conn.execute(
+        "SELECT id FROM organizations WHERE org_type='section'"
+    ).fetchall()
+    total_added = 0
+    for org in section_orgs:
+        oid = org['id']
+        for rank, pos in enumerate(STANDARD_SECTION_OFFICES_UNIQUE):
+            existing = conn.execute(
+                "SELECT id FROM org_positions WHERE org_id=? AND position_name=?", (oid, pos)
+            ).fetchone()
+            if not existing:
+                conn.execute(
+                    "INSERT INTO org_positions (org_id,position_name,rank_order) VALUES (?,?,?)",
+                    (oid, pos, rank)
+                )
+                total_added += 1
+    conn.commit(); conn.close()
+    if total_added:
+        flash(f'{total_added} position(s) generated across {len(section_orgs)} section(s).', 'success')
+    else:
+        flash('All sections already have standard positions.', 'warning')
+    return redirect(url_for('organizations'))
+
+
+@app.route('/organizations/delete_all_non_ssg', methods=['POST'])
+@login_required
+def delete_all_org_data():
+    """Delete all members and positions from section/club/etc orgs. Excludes SSG (government type)."""
+    conn = get_db()
+    # Get all non-government org ids
+    non_ssg_orgs = conn.execute(
+        "SELECT id FROM organizations WHERE org_type != 'government'"
+    ).fetchall()
+    deleted_members = 0
+    deleted_positions = 0
+    for org in non_ssg_orgs:
+        oid = org['id']
+        r = conn.execute("DELETE FROM org_members WHERE org_id=?", (oid,))
+        deleted_members += r.rowcount
+        r = conn.execute("DELETE FROM org_positions WHERE org_id=?", (oid,))
+        deleted_positions += r.rowcount
+    conn.commit(); conn.close()
+    flash(f'Cleared {deleted_members} member assignment(s) and {deleted_positions} position(s) from all sections and organizations (SSG preserved).', 'success')
+    return redirect(url_for('organizations'))
+
+
+@app.route('/organizations/<int:oid>/add_member', methods=['POST'])
+@login_required
+def add_org_member(oid):
+    d = request.form
+    student_id = int(d['student_id'])
+    position_id = d.get('position_id') or None
+    conn = get_db()
+    try:
+        org = conn.execute("SELECT org_type FROM organizations WHERE id=?", (oid,)).fetchone()
+
+        # Rule: SSG exec students cannot hold section/strand/grade offices
+        if org and org['org_type'] != 'government' and position_id:
+            ssg_org = conn.execute("SELECT id FROM organizations WHERE org_type='government'").fetchone()
+            if ssg_org:
+                is_ssg_exec = conn.execute(
+                    "SELECT 1 FROM org_members om JOIN org_positions op ON om.position_id=op.id"
+                    " WHERE om.org_id=? AND om.student_id=? AND om.is_active=1"
+                    " AND op.position_name IN ({})".format(
+                        ','.join('?' * len(STANDARD_SSG_OFFICES_NAMES))
+                    ),
+                    [ssg_org['id'], student_id] + STANDARD_SSG_OFFICES_NAMES
+                ).fetchone()
+                if is_ssg_exec:
+                    flash('This student holds an SSG executive position and cannot hold classroom, strand, or grade-level offices.', 'danger')
+                    conn.close()
+                    return redirect(url_for('organization_detail', oid=oid))
+
+        conn.execute(
+            "INSERT INTO org_members (org_id,student_id,position_id,school_year,is_active)"
+            " VALUES (?,?,?,?,1)",
+            (oid, student_id, position_id,
+             d.get('school_year','').strip() or None)
+        )
+        conn.commit()
+        flash('Member added.', 'success')
+    except Exception as e:
+        flash(f'Error: {e}', 'danger')
+    finally:
+        conn.close()
+    return redirect(url_for('organization_detail', oid=oid))
+
+@app.route('/organizations/<int:oid>/remove_member/<int:mid>', methods=['POST'])
+@login_required
+def remove_org_member(oid, mid):
+    conn = get_db()
+    conn.execute("DELETE FROM org_members WHERE id=? AND org_id=?", (mid, oid))
+    conn.commit(); conn.close()
+    flash('Member removed.', 'success')
+    return redirect(url_for('organization_detail', oid=oid))
+
+@app.route('/api/organizations/<int:oid>/members')
+@login_required
+def api_org_members(oid):
+    conn = get_db()
+    members = conn.execute(
+        "SELECT om.student_id, s.first_name, s.last_name, s.middle_name,"
+        " s.student_id AS sid_code, op.position_name"
+        " FROM org_members om"
+        " JOIN students s ON om.student_id=s.id"
+        " LEFT JOIN org_positions op ON om.position_id=op.id"
+        " WHERE om.org_id=? AND om.is_active=1"
+        " ORDER BY op.rank_order NULLS LAST, s.last_name",
+        (oid,)
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(m) for m in members])
+
+
+@app.route('/api/debug/ssg_positions')
+@login_required
+def debug_ssg_positions():
+    conn = get_db()
+    ssg = conn.execute("SELECT id, name, org_type FROM organizations WHERE org_type='government'").fetchone()
+    if not ssg:
+        conn.close()
+        return jsonify({'error': 'No government org found'})
+    positions = conn.execute(
+        "SELECT id, position_name, rank_order FROM org_positions WHERE org_id=? ORDER BY rank_order, position_name",
+        (ssg['id'],)
+    ).fetchall()
+    conn.close()
+    return jsonify({
+        'ssg_id': ssg['id'],
+        'ssg_name': ssg['name'],
+        'org_type': ssg['org_type'],
+        'position_count': len(positions),
+        'positions': [dict(p) for p in positions]
+    })
+
+
+@app.route('/api/positions/all')
+@any_role_required
+def api_all_positions():
+    """Return all position rows across all orgs with org info — no deduplication."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT op.id AS pos_id, op.position_name, o.name AS org_name, o.org_type, o.id AS org_id"
+        " FROM org_positions op"
+        " JOIN organizations o ON op.org_id=o.id"
+        " ORDER BY CASE o.org_type WHEN 'government' THEN 0 WHEN 'section' THEN 1 ELSE 2 END,"
+        " op.rank_order, op.position_name"
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/positions/members')
+@any_role_required
+def api_position_members():
+    """Return students who hold any of the given position names, optionally scoped to org_ids."""
+    pos_names = [p.strip() for p in request.args.get('positions','').split(',') if p.strip()]
+    org_ids   = [o.strip() for o in request.args.get('org_ids','').split(',') if o.strip()]
+    if not pos_names:
+        return jsonify([])
+    conn = get_db()
+    ph = ','.join('?' * len(pos_names))
+    if org_ids:
+        oh   = ','.join('?' * len(org_ids))
+        rows = conn.execute(
+            f"SELECT DISTINCT om.student_id, s.first_name, s.last_name, s.middle_name,"
+            f" s.student_id AS sid_code, op.position_name, o.name AS org_name, o.org_type"
+            f" FROM org_members om"
+            f" JOIN students s ON om.student_id=s.id"
+            f" JOIN org_positions op ON om.position_id=op.id"
+            f" JOIN organizations o ON om.org_id=o.id"
+            f" WHERE op.position_name IN ({ph}) AND om.org_id IN ({oh}) AND om.is_active=1"
+            f" ORDER BY o.org_type DESC, op.position_name, s.last_name",
+            pos_names + org_ids
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT DISTINCT om.student_id, s.first_name, s.last_name, s.middle_name,"
+            f" s.student_id AS sid_code, op.position_name, o.name AS org_name, o.org_type"
+            f" FROM org_members om"
+            f" JOIN students s ON om.student_id=s.id"
+            f" JOIN org_positions op ON om.position_id=op.id"
+            f" JOIN organizations o ON om.org_id=o.id"
+            f" WHERE op.position_name IN ({ph}) AND om.is_active=1"
+            f" ORDER BY o.org_type DESC, op.position_name, s.last_name",
+            pos_names
+        ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+
+@app.route('/attendance/event/<int:eid>/view')
+@login_required
+def attendance_event_view(eid):
+    conn = get_db()
+    event = conn.execute(
+        "SELECT ae.*, sec.section_name, sec.grade_level, sub.subject_name, sub.subject_code,"
+        " ac.name AS category_name, ac.color AS category_color, ac.icon AS category_icon"
+        " FROM attendance_events ae"
+        " LEFT JOIN sections sec ON ae.section_id=sec.id"
+        " LEFT JOIN subjects sub ON ae.subject_id=sub.id"
+        " LEFT JOIN attendance_categories ac ON ae.category_id=ac.id"
+        " WHERE ae.id=? AND ae.event_type=\'class\'", (eid,)
+    ).fetchone()
+    if not event:
+        flash("Class event not found.", "danger")
+        return redirect(url_for("attendance_home"))
+    students = conn.execute(
+        "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name, s.gender,"
+        " sec.section_name FROM students s"
+        " LEFT JOIN sections sec ON s.section_id=sec.id"
+        " WHERE s.section_id=? AND s.enrollment_status=\'Enrolled\'"
+        " ORDER BY s.last_name, s.first_name", (event["section_id"],)
+    ).fetchall()
+    records = conn.execute(
+        "SELECT student_id, status, note, recorded_at FROM attendance_records WHERE event_id=?", (eid,)
+    ).fetchall()
+    record_map = {r["student_id"]: r for r in records}
+    summary    = attendance_summary(conn, eid)
+    conn.close()
+    return render_template("attendance_event_view.html", event=event,
+                           students=students, record_map=record_map, summary=summary)
+
+
+STANDARD_SECTION_OFFICES = [
+    "President",
+    "Vice President",
+    "Secretary",
+    "Treasurer",
+    "Auditor",
+    "Public Information and Relations Officer",
+    "Protocol Officer I",
+    "Protocol Officer II",
+]
+
+# 8 section offices — Protocol Officer has 2 named slots
+STANDARD_SECTION_OFFICES_UNIQUE = [
+    "President",
+    "Vice President",
+    "Secretary",
+    "Treasurer",
+    "Auditor",
+    "Public Information and Relations Officer",
+    "Protocol Officer I",
+    "Protocol Officer II",
+]
+
+STANDARD_SSG_OFFICES_NAMES = [
+    "President",
+    "Vice President for Internal Affairs",
+    "Vice President for External Affairs",
+    "Secretary General",
+    "Assistant Secretary",
+    "Treasurer",
+    "Assistant Treasurer",
+    "Auditor",
+    "Public Information and Relations Officer",
+    "Protocol Officer I",
+    "Protocol Officer II",
+]
+
+STANDARD_SSG_OFFICES = [
+    ("President", 0),
+    ("Vice President for Internal Affairs", 1),
+    ("Vice President for External Affairs", 2),
+    ("Secretary General", 3),
+    ("Assistant Secretary", 4),
+    ("Treasurer", 5),
+    ("Assistant Treasurer", 6),
+    ("Auditor", 7),
+    ("Public Information and Relations Officer", 8),
+    ("Protocol Officer I",  9),
+    ("Protocol Officer II", 10),
+]
+
+def auto_create_ssg(conn):
+    """Auto-create the SSG org. On first creation seeds all positions.
+    On subsequent visits, only adds NEW positions from the standard list
+    (e.g. Protocol Officer I/II replacing old Peace Officer/Sergeant-at-Arms).
+    Deleted positions are never re-added."""
+    SSG_NAME = "Supreme Student Government"
+    ssg = conn.execute(
+        "SELECT id FROM organizations WHERE org_type='government' AND name=?", (SSG_NAME,)
+    ).fetchone()
+    if ssg:
+        oid = ssg["id"]
+        # Patch: add any standard positions that don't exist yet
+        # (handles renamed/new positions without re-adding deleted ones)
+        existing_names = {r["position_name"] for r in conn.execute(
+            "SELECT position_name FROM org_positions WHERE org_id=?", (oid,)
+        ).fetchall()}
+        for pos, rank in STANDARD_SSG_OFFICES:
+            if pos not in existing_names:
+                conn.execute(
+                    "INSERT OR IGNORE INTO org_positions (org_id,position_name,rank_order) VALUES (?,?,?)",
+                    (oid, pos, rank)
+                )
+        # Rename old Strand Representatives to Strand Governors
+        conn.execute(
+            "UPDATE org_positions SET position_name = REPLACE(position_name, 'Strand Representative', 'Strand Governor')"
+            " WHERE org_id=? AND position_name LIKE 'Strand Representative%'", (oid,)
+        )
+        # Fix any Grade Governor renames back to Grade Representative (revert previous mistake)
+        conn.execute(
+            "UPDATE org_positions SET position_name = REPLACE(position_name, ' Governor', ' Representative')"
+            " WHERE org_id=? AND position_name LIKE 'Grade% Governor'", (oid,)
+        )
+        # Add missing Grade Representatives if they don't exist yet
+        grades = conn.execute(
+            "SELECT DISTINCT grade_level FROM sections ORDER BY grade_level"
+        ).fetchall()
+        existing_names2 = {r["position_name"] for r in conn.execute(
+            "SELECT position_name FROM org_positions WHERE org_id=?", (oid,)
+        ).fetchall()}
+        for g in grades:
+            pos = f"Grade {g['grade_level']} Representative"
+            if pos not in existing_names2:
+                conn.execute(
+                    "INSERT OR IGNORE INTO org_positions (org_id,position_name,rank_order) VALUES (?,?,?)",
+                    (oid, pos, 15)
+                )
+        # Update ranks: Grade Representatives = 15 (above Strand Governors = 25)
+        conn.execute(
+            "UPDATE org_positions SET rank_order=15 WHERE org_id=? AND position_name LIKE 'Grade% Representative'", (oid,)
+        )
+        conn.execute(
+            "UPDATE org_positions SET rank_order=25 WHERE org_id=? AND position_name LIKE 'Strand Governor%'", (oid,)
+        )
+        conn.commit()
+        return oid
+
+    # First-time creation only
+    conn.execute(
+        "INSERT INTO organizations (name,short_name,description,org_type,color) VALUES (?,?,?,?,?)",
+        (SSG_NAME, "SSG", "Supreme Student Government", "government", "#3b82f6")
+    )
+    oid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    # Standard executive positions
+    for pos, rank in STANDARD_SSG_OFFICES:
+        conn.execute(
+            "INSERT OR IGNORE INTO org_positions (org_id,position_name,rank_order) VALUES (?,?,?)",
+            (oid, pos, rank)
+        )
+
+    # Strand curriculum representatives
+    strands = conn.execute("SELECT strand_code, strand_name FROM strands ORDER BY strand_code").fetchall()
+    for st in strands:
+        pos = f"Strand Governor — {st['strand_code']} ({st['strand_name']})"
+        conn.execute(
+            "INSERT OR IGNORE INTO org_positions (org_id,position_name,rank_order) VALUES (?,?,?)",
+            (oid, pos, 25)
+        )
+
+    # Grade level curriculum representatives
+    grades = conn.execute(
+        "SELECT DISTINCT grade_level FROM sections ORDER BY grade_level"
+    ).fetchall()
+    for g in grades:
+        pos = f"Grade {g['grade_level']} Representative"
+        conn.execute(
+            "INSERT OR IGNORE INTO org_positions (org_id,position_name,rank_order) VALUES (?,?,?)",
+            (oid, pos, 15)
+        )
+
+    return oid
+
+
+@app.route("/sections/<int:sec_id>/officers")
+@login_required
+def section_officers(sec_id):
+    conn = get_db()
+    section = conn.execute(
+        "SELECT s.*, t.first_name, t.last_name FROM sections s"
+        " LEFT JOIN teachers t ON s.adviser_id=t.id WHERE s.id=?", (sec_id,)
+    ).fetchone()
+    if not section:
+        flash("Section not found.", "danger")
+        return redirect(url_for("sections"))
+    org_name = f"Section Officers — {section['section_name']}"
+    org = conn.execute(
+        "SELECT * FROM organizations WHERE org_type=\'section\' AND name=?", (org_name,)
+    ).fetchone()
+    if not org:
+        conn.execute(
+            "INSERT INTO organizations (name,short_name,org_type,color) VALUES (?,?,?,?)",
+            (org_name, section["section_name"], "section", "#8b5cf6")
+        )
+        oid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for rank, pos in enumerate(STANDARD_SECTION_OFFICES_UNIQUE):
+            conn.execute(
+                "INSERT OR IGNORE INTO org_positions (org_id,position_name,rank_order) VALUES (?,?,?)",
+                (oid, pos, rank)
+            )
+        conn.commit()
+        org = conn.execute("SELECT * FROM organizations WHERE id=?", (oid,)).fetchone()
+    else:
+        oid = org["id"]
+        # Do NOT re-add positions — admin manages them freely after creation
+    positions = conn.execute(
+        "SELECT op.*, COUNT(om.id) AS member_count"
+        " FROM org_positions op"
+        " LEFT JOIN org_members om ON om.position_id=op.id AND om.is_active=1"
+        " WHERE op.org_id=? GROUP BY op.id ORDER BY op.rank_order, op.position_name", (oid,)
+    ).fetchall()
+    officers = conn.execute(
+        "SELECT om.id AS member_row_id, om.school_year,"
+        " s.id AS student_db_id, s.first_name, s.last_name, s.middle_name,"
+        " s.student_id AS sid_code, s.gender,"
+        " op.position_name, op.rank_order"
+        " FROM org_members om"
+        " JOIN students s ON om.student_id=s.id"
+        " LEFT JOIN org_positions op ON om.position_id=op.id"
+        " WHERE om.org_id=? AND om.is_active=1"
+        " ORDER BY op.rank_order NULLS LAST, s.last_name", (oid,)
+    ).fetchall()
+    all_students = conn.execute(
+        "SELECT s.id, s.student_id, s.first_name, s.last_name, s.middle_name"
+        " FROM students s WHERE s.section_id=? AND s.enrollment_status=\'Enrolled\'"
+        " ORDER BY s.last_name, s.first_name", (sec_id,)
+    ).fetchall()
+    conn.close()
+    return render_template("section_officers.html", section=section, org=org,
+                           positions=positions, officers=officers,
+                           all_students=all_students, sec_id=sec_id,
+                           standard_offices=STANDARD_SECTION_OFFICES)
+
+
+@app.route("/sections/<int:sec_id>/officers/add", methods=["POST"])
+@login_required
+def add_section_officer(sec_id):
+    d = request.form
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO org_members (org_id,student_id,position_id,school_year,is_active) VALUES (?,?,?,?,1)",
+            (int(d["org_id"]), int(d["student_id"]),
+             d.get("position_id") or None, d.get("school_year","").strip() or None)
+        )
+        conn.commit()
+        flash("Officer assigned.", "success")
+    except Exception as e:
+        flash(f"Error: {e}", "danger")
+    finally:
+        conn.close()
+    return redirect(url_for("section_officers", sec_id=sec_id))
+
+
+@app.route("/sections/<int:sec_id>/officers/remove/<int:mid>", methods=["POST"])
+@login_required
+def remove_section_officer(sec_id, mid):
+    conn = get_db()
+    conn.execute("DELETE FROM org_members WHERE id=?", (mid,))
+    conn.commit(); conn.close()
+    flash("Officer removed.", "success")
+    return redirect(url_for("section_officers", sec_id=sec_id))
+
 
 if __name__ == '__main__':
     init_db()

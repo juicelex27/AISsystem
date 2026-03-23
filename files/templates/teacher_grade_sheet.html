@@ -1,7 +1,7 @@
 {% extends "portal_layout.html" %}
 {% block title %}Grade Sheet — {{ subject.subject_name }}{% endblock %}
 {% block page_title %}Grade Encoding{% endblock %}
-{% block page_subtitle %}{{ subject.subject_name }} · {{ section.section_name }} · Grade {{ section.grade_level }}{% endblock %}
+{% block page_subtitle %}{{ subject.subject_name }} · {{ section.section_name }} · Grade {{ section.grade_level }}{% if subject.semester == 'Whole Year' %} · {{ active_sem }}{% endif %}{% endblock %}
 
 {% block header_actions %}
   <a href="{{ url_for('teacher_dashboard') }}" class="btn btn-secondary">
@@ -9,6 +9,7 @@
     Back
   </a>
   <form method="GET" action="{{ url_for('teacher_export_grades', sec_id=sec_id, sub_id=sub_id) }}" style="display:flex;align-items:center;gap:6px;">
+    <input type="hidden" name="semester" value="{{ eff_sem }}">
     <select name="period" class="form-control" style="width:140px;padding:6px 10px;font-size:13px;">
       <option value="all">All Periods</option>
       <option value="Prelim">Prelim</option>
@@ -73,6 +74,15 @@
 {% endblock %}
 
 {% block content %}
+{% if subject.semester == 'Whole Year' %}
+<div style="display:flex;gap:8px;margin-bottom:20px;align-items:center;">
+  <span style="font-size:12px;font-weight:600;color:var(--text-muted);">Semester:</span>
+  <a href="{{ url_for('teacher_grade_sheet', sec_id=sec_id, sub_id=sub_id, sem='1st Semester') }}"
+     style="padding:5px 16px;border-radius:99px;font-size:12px;font-weight:700;text-decoration:none;border:1.5px solid {{ 'transparent' if active_sem=='1st Semester' else 'var(--border)' }};background:{{ 'var(--brand-gradient)' if active_sem=='1st Semester' else '#fff' }};color:{{ '#fff' if active_sem=='1st Semester' else 'var(--text-secondary)' }};">1st Semester</a>
+  <a href="{{ url_for('teacher_grade_sheet', sec_id=sec_id, sub_id=sub_id, sem='2nd Semester') }}"
+     style="padding:5px 16px;border-radius:99px;font-size:12px;font-weight:700;text-decoration:none;border:1.5px solid {{ 'transparent' if active_sem=='2nd Semester' else 'var(--border)' }};background:{{ 'var(--brand-gradient)' if active_sem=='2nd Semester' else '#fff' }};color:{{ '#fff' if active_sem=='2nd Semester' else 'var(--text-secondary)' }};">2nd Semester</a>
+</div>
+{% endif %}
 <div class="content-card">
   <div style="padding:14px 20px;border-bottom:1px solid var(--border);">
     <div class="legend">
@@ -179,6 +189,8 @@ const SUB_ID  = {{ sub_id }};
 const SEC_ID  = {{ sec_id }};
 const PASSING = {{ passing_grade }};
 const QUARTERS = {{ open_periods | tojson }};
+const SEMESTER = {{ active_sem | tojson }};
+const EFF_SEM  = {{ eff_sem | tojson }};
 
 let saveTimers = {};
 
@@ -204,7 +216,8 @@ async function doSave(el) {
     const r = await fetch(SAVE_URL, {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({
         student_id: parseInt(el.dataset.student), subject_id: parseInt(el.dataset.subject),
-        section_id: parseInt(el.dataset.section), quarter: el.dataset.quarter,
+        section_id: parseInt(el.dataset.section), semester: EFF_SEM,
+        quarter: el.dataset.quarter,
         component: el.dataset.component, value: v, reason: 'Teacher grade entry'
       })});
     const d = await r.json();
@@ -244,7 +257,7 @@ async function submitQuarter(quarter) {
   if (!confirm(`Submit ${quarter} grades for review? You will not be able to edit until admin approves or returns.`)) return;
   try {
     const r = await fetch(SUBMIT_URL, {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({subject_id:SUB_ID, section_id:SEC_ID, quarter})});
+      body: JSON.stringify({subject_id:SUB_ID, section_id:SEC_ID, quarter, semester:EFF_SEM})});
     const d = await r.json();
     if (d.ok) {
       const pill = document.getElementById(`status_${quarter}`);
@@ -265,7 +278,7 @@ async function handleImport(input) {
   fd.append('csv_file', file);
   toast('Importing grades…', 'success');
   try {
-    const r = await fetch(`/teacher/grade_sheet/${SEC_ID}/${SUB_ID}/import`, {method:'POST', body:fd});
+    const r = await fetch(`/teacher/grade_sheet/${SEC_ID}/${SUB_ID}/import?semester=${encodeURIComponent(EFF_SEM)}`, {method:'POST', body:fd});
     const d = await r.json();
     if (d.ok) {
       let msg = `Imported: ${d.updated} grade(s) updated.`;

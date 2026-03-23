@@ -24,6 +24,7 @@
 .honor-stat .hs-lbl { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:var(--text-muted); margin-top:4px; }
 .honor-badge { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border-radius:99px; font-size:11px; font-weight:700; }
 .honor-highest { background:#fef9c3; color:#854d0e; }
+.honor-high    { background:#f3e8ff; color:#7c3aed; }
 .honor-with    { background:#dbeafe; color:#1e40af; }
 .honor-honors  { background:#f0fdf4; color:#166534; }
 .rank-badge { width:28px; height:28px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:12px; font-weight:800; }
@@ -60,34 +61,51 @@
     </span>
     {% endif %}
   </div>
+  {% if sec_id %}
+  <div style="padding:10px 20px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;">
+    <span style="font-size:12px;font-weight:600;color:var(--text-muted);">Semester:</span>
+    <a href="{{ url_for('honor_roll', section_id=sec_id, sem='1st Semester') }}"
+       style="padding:5px 16px;border-radius:99px;font-size:12px;font-weight:700;text-decoration:none;border:1.5px solid {{ '#a01850' if active_sem=='1st Semester' else 'var(--border)' }};background:{{ 'var(--brand-gradient)' if active_sem=='1st Semester' else '#fff' }};color:{{ '#fff' if active_sem=='1st Semester' else 'var(--text-secondary)' }};">
+      1st Semester
+    </a>
+    <a href="{{ url_for('honor_roll', section_id=sec_id, sem='2nd Semester') }}"
+       style="padding:5px 16px;border-radius:99px;font-size:12px;font-weight:700;text-decoration:none;border:1.5px solid {{ '#a01850' if active_sem=='2nd Semester' else 'var(--border)' }};background:{{ 'var(--brand-gradient)' if active_sem=='2nd Semester' else '#fff' }};color:{{ '#fff' if active_sem=='2nd Semester' else 'var(--text-secondary)' }};">
+      2nd Semester
+    </a>
+    <span style="font-size:12px;color:var(--text-muted);margin-left:4px;">— grades reflect current {{ active_sem }} records</span>
+  </div>
+  {% endif %}
 
   {% if sec_id and not honorees %}
   <div class="empty-state">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
-    <h3>No honorees yet</h3>
-    <p>Students with a general average of 90 or above will appear here.</p>
+    <h3>No honorees for {{ active_sem }}</h3>
+    <p>Students with a general average of 90 or above will appear here. Grades may have been reverted or not yet encoded.</p>
   </div>
 
   {% elif honorees %}
   <!-- Summary stats -->
+  <div style="padding:12px 20px 0;font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;">
+    {{ active_sem }} Honor Roll — {{ sel_section.section_name }}
+  </div>
   <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;gap:16px;flex-wrap:wrap;">
     {% set highest = honorees|selectattr('honor','equalto','With Highest Honors')|list %}
+    {% set high_h  = honorees|selectattr('honor','equalto','With High Honors')|list %}
     {% set with_h  = honorees|selectattr('honor','equalto','With Honors')|list %}
-    {% set honors  = honorees|selectattr('honor','equalto','Honors')|list %}
     <div class="honor-stat" style="border-top:3px solid #fde68a;">
       <div class="hs-val" style="color:#854d0e;">{{ highest|length }}</div>
       <div class="hs-lbl">With Highest Honors</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">≥ 98</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">≥ 97.5</div>
+    </div>
+    <div class="honor-stat" style="border-top:3px solid #e9d5ff;">
+      <div class="hs-val" style="color:#7c3aed;">{{ high_h|length }}</div>
+      <div class="hs-lbl">With High Honors</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">94.5 – 97.49</div>
     </div>
     <div class="honor-stat" style="border-top:3px solid #bfdbfe;">
       <div class="hs-val" style="color:#1e40af;">{{ with_h|length }}</div>
       <div class="hs-lbl">With Honors</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">95 – 97</div>
-    </div>
-    <div class="honor-stat" style="border-top:3px solid #bbf7d0;">
-      <div class="hs-val" style="color:#166534;">{{ honors|length }}</div>
-      <div class="hs-lbl">Honors</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">90 – 94</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">89.5 – 94.49</div>
     </div>
     <div class="honor-stat" style="border-top:3px solid var(--border);">
       <div class="hs-val">{{ honorees|length }}</div>
@@ -123,7 +141,7 @@
             {{ '%.2f'|format(h.avg) }}
           </td>
           <td style="text-align:center;">
-            <span class="honor-badge {{ 'honor-highest' if h.honor=='With Highest Honors' else ('honor-with' if h.honor=='With Honors' else 'honor-honors') }}">
+            <span class="honor-badge {{ 'honor-highest' if h.honor=='With Highest Honors' else ('honor-high' if h.honor=='With High Honors' else ('honor-with' if h.honor=='With Honors' else 'honor-honors')) }}">
               <svg viewBox="0 0 24 24" fill="currentColor" style="width:11px;height:11px;"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
               {{ h.honor }}
             </span>
