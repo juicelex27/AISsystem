@@ -59,11 +59,8 @@ function editSubject(id) {
 // ── EDIT SECTION ──────────────────────────────────────────────
 function editSection(id) {
   fetch(`/sections/get/${id}`).then(r => r.json()).then(data => {
-    // Normalize grade_level: "11" -> "Grade 11", "Grade 11" -> "Grade 11"
-    const gl = data.grade_level || '';
-    const normalGrade = gl.startsWith('Grade ') ? gl : (gl ? 'Grade ' + gl : '');
     document.getElementById('edit_section_id').value      = data.id;
-    document.getElementById('edit_grade_level_sec').value = normalGrade;
+    document.getElementById('edit_grade_level_sec').value = data.grade_level;
     document.getElementById('edit_section_name').value    = data.section_name;
     document.getElementById('edit_strand_id').value       = data.strand_id || '';
     document.getElementById('edit_adviser_id').value      = data.adviser_id || '';
@@ -111,7 +108,7 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
   const DAYS       = ['Monday','Tuesday','Wednesday','Thursday','Friday'];
   const START_HOUR = 7;
   const END_HOUR   = 17;
-  const SLOT_H     = 32;
+  const SLOT_H     = 32;   // px per 30-minute slot
   const COLS       = DAYS.length;
 
   const COLORS = [
@@ -132,15 +129,12 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
   const totalSlots = (END_HOUR - START_HOUR) * 2;
   const totalH     = totalSlots * SLOT_H;
 
-  // ── Collision detection: assign lane (sub-column) per entry per day ──
-  // For each day, sort entries by start time, then greedily assign lanes
-  // so overlapping entries sit side-by-side instead of stacking on top.
   const toMin = t => {
     const [h, m] = t.split(':').map(Number);
     return (h - START_HOUR) * 60 + m;
   };
 
-  // Build per-day entry list with computed minutes
+  // Build per-day entry list
   const byDay = {};
   DAYS.forEach(d => { byDay[d] = []; });
   schedules.forEach(sch => {
@@ -151,42 +145,25 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
     byDay[sch.day].push({ sch, startMin, endMin, lane: -1, totalLanes: 1 });
   });
 
-  // For each day, find overlap groups and assign lanes within each group
+  // Greedy lane assignment per day
   DAYS.forEach(day => {
     const entries = byDay[day];
     if (!entries.length) return;
-
-    // Sort by start time
     entries.sort((a, b) => a.startMin - b.startMin);
-
-    // Greedy lane assignment
-    const laneEnds = []; // laneEnds[i] = endMin of last entry in lane i
+    const laneEnds = [];
     entries.forEach(entry => {
       let assigned = -1;
       for (let i = 0; i < laneEnds.length; i++) {
-        if (entry.startMin >= laneEnds[i]) {
-          assigned = i;
-          laneEnds[i] = entry.endMin;
-          break;
-        }
+        if (entry.startMin >= laneEnds[i]) { assigned = i; laneEnds[i] = entry.endMin; break; }
       }
-      if (assigned === -1) {
-        assigned = laneEnds.length;
-        laneEnds.push(entry.endMin);
-      }
+      if (assigned === -1) { assigned = laneEnds.length; laneEnds.push(entry.endMin); }
       entry.lane = assigned;
     });
-
-    // Find total lanes needed for each entry (max lane index in its overlap group + 1)
-    // Re-scan: for each entry, count how many lanes are active during its time span
     entries.forEach(entry => {
       let maxLane = entry.lane;
       entries.forEach(other => {
         if (other === entry) return;
-        // overlaps if they share any time
-        if (other.startMin < entry.endMin && other.endMin > entry.startMin) {
-          maxLane = Math.max(maxLane, other.lane);
-        }
+        if (other.startMin < entry.endMin && other.endMin > entry.startMin) maxLane = Math.max(maxLane, other.lane);
       });
       entry.totalLanes = maxLane + 1;
     });
@@ -230,19 +207,99 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
     return `${h12}:${String(mm).padStart(2,'0')} ${suffix}`;
   };
 
-  // Render events using lane-aware positioning
+  // ── Height-aware content builder ──────────────────────────
+  // SLOT_H = 32px per 30 min → 1 hour = 64px raw, usable = 60px (minus 4px top offset)
+  //
+  // Breakpoints (usable inner height after padding):
+  //   TINY   ≤ 34px  (~30 min)  : subject code only, 2px padding
+  //   SMALL  ≤ 62px  (~1 hour)  : subject name + time line, 3px padding, compact fonts
+  //   NORMAL  > 62px (> 1 hour) : full content — name, teacher, time, room
+
+  function buildEventContent(sch, heightPx) {
+    const usable = heightPx - 4; // subtract the 2px top + 2px bottom offset applied to the block
+
+    const isTiny   = usable <= 34;
+    const isSmall  = usable <= 62;
+
+    const timeStr  = `${label12(sch.time_start)}–${label12(sch.time_end)}`;
+    const roomStr  = sch.room ? `📍 ${sch.room}` : '';
+
+    if (isTiny) {
+      // ── TINY: single line, code + time ──────────────────────
+      return {
+        padding: '2px 5px',
+        html: `
+          <div style="
+            font-size:9px;font-weight:800;color:white;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+            line-height:1.25;
+          ">${sch.subject_code || sch.subject_name}</div>
+          <div style="
+            font-size:8px;color:rgba(255,255,255,.75);
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+            line-height:1.2;margin-top:1px;
+          ">${timeStr}</div>
+        `
+      };
+    }
+
+    if (isSmall) {
+      // ── SMALL (≤1 hr): name + teacher + time, no room ───────
+      // Show room only if there's enough vertical space (usable > 48px, i.e. > 45 min)
+      const showRoom    = roomStr && usable > 48;
+      const showTeacher = usable > 40;
+
+      return {
+        padding: '3px 6px',
+        html: `
+          <div style="
+            font-size:10px;font-weight:700;color:white;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+            line-height:1.3;
+          ">${sch.subject_name}</div>
+          ${showTeacher ? `
+          <div style="
+            font-size:9px;color:rgba(255,255,255,.8);
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+            line-height:1.25;margin-top:1px;
+          ">${sch.teacher_name}</div>` : ''}
+          <div style="
+            font-size:9px;color:rgba(255,255,255,.7);
+            white-space:nowrap;line-height:1.25;margin-top:1px;
+          ">${timeStr}</div>
+          ${showRoom ? `
+          <div style="
+            font-size:9px;color:rgba(255,255,255,.6);
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+            line-height:1.25;margin-top:1px;
+          ">${roomStr}</div>` : ''}
+        `
+      };
+    }
+
+    // ── NORMAL (> 1 hr): full content ───────────────────────
+    return {
+      padding: '4px 7px',
+      html: `
+        <div style="font-size:11px;font-weight:700;color:white;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${sch.subject_name}</div>
+        <div style="font-size:10px;color:rgba(255,255,255,.8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${sch.teacher_name}</div>
+        <div style="font-size:10px;color:rgba(255,255,255,.7);">${timeStr}</div>
+        ${roomStr ? `<div style="font-size:10px;color:rgba(255,255,255,.6);">${roomStr}</div>` : ''}
+      `
+    };
+  }
+
+  // ── Render events ──────────────────────────────────────────
   DAYS.forEach((day, dayIdx) => {
     byDay[day].forEach(({ sch, startMin, endMin, lane, totalLanes }) => {
       const topPx    = (startMin / 30) * SLOT_H;
       const heightPx = Math.max(((endMin - startMin) / 30) * SLOT_H, SLOT_H);
 
-      // Each day column is (1/COLS * 100)% wide; within it, split by lanes
       const colPercent  = (dayIdx / COLS) * 100;
       const colWidth    = (1 / COLS) * 100;
       const laneWidth   = colWidth / totalLanes;
       const laneOffset  = laneWidth * lane;
 
-      // Horizontal inset: 3px gap on outer edges, 2px between lanes
       const isFirst = lane === 0;
       const isLast  = lane === totalLanes - 1;
       const leftGap  = isFirst ? 3 : 2;
@@ -255,6 +312,8 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
       }
       const color = colorMap[colorKey];
 
+      const { padding, html: contentHtml } = buildEventContent(sch, heightPx);
+
       html += `
         <div class="tt-event" style="
           position:absolute;
@@ -264,14 +323,14 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
           width:calc(${laneWidth}% - ${leftGap + rightGap}px);
           background:${color};
           border-radius:6px;
-          padding:4px 7px;
+          padding:${padding};
           overflow:hidden;
           z-index:2;
+          display:flex;
+          flex-direction:column;
+          justify-content:flex-start;
         " title="${sch.subject_name} • ${sch.teacher_name} • ${label12(sch.time_start)}–${label12(sch.time_end)}">
-          <div style="font-size:11px;font-weight:700;color:white;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${sch.subject_name}</div>
-          <div style="font-size:10px;color:rgba(255,255,255,.8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${sch.teacher_name}</div>
-          <div style="font-size:10px;color:rgba(255,255,255,.7);">${label12(sch.time_start)}–${label12(sch.time_end)}</div>
-          ${sch.room ? `<div style="font-size:10px;color:rgba(255,255,255,.6);">📍 ${sch.room}</div>` : ''}
+          ${contentHtml}
           ${deleteBase ? `
           <form method="POST" action="${deleteBase}/${sch.id}" style="display:inline;" onsubmit="return confirm('Remove this schedule entry?')">
             <button type="submit" style="position:absolute;top:3px;right:4px;width:16px;height:16px;border-radius:50%;background:rgba(0,0,0,.25);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;" title="Remove">
