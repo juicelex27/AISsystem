@@ -766,6 +766,8 @@ def get_teacher(tid):
     conn.close()
     return jsonify(dict(t)) if t else (jsonify({}), 404)
 
+# Replace the existing teacher_schedule route in app.py with this:
+
 @app.route('/teachers/<int:tid>/schedule')
 @login_required
 def teacher_schedule(tid):
@@ -774,11 +776,11 @@ def teacher_schedule(tid):
     if not teacher:
         flash('Teacher not found.', 'danger')
         return redirect(url_for('teachers'))
-
+ 
     schedules_list = conn.execute("""
         SELECT sc.id, sc.section_id, sc.subject_id, sc.teacher_id,
-               sc.day, sc.time_start, sc.time_end, sc.room, sc.semester,
-               sub.subject_name, sub.subject_code, sub.semester AS subject_semester,
+               sc.day, sc.time_start, sc.time_end, sc.room,
+               sub.subject_name, sub.subject_code, sub.semester,
                sec.section_name, sec.grade_level,
                st.strand_code
         FROM schedules sc
@@ -798,32 +800,27 @@ def teacher_schedule(tid):
             END,
             sc.time_start
     """, (tid,)).fetchall()
-
+ 
     days_active    = len(set(s['day']        for s in schedules_list))
     sections_count = len(set(s['section_id'] for s in schedules_list))
-
-    # Build semester tabs — fall back to subject_semester for legacy NULL sc.semester rows
-    raw_sems = set()
-    for s in schedules_list:
-        sem = s['semester'] or s['subject_semester'] or None
-        if not sem:
-            continue
-        if sem == 'Whole Year':
-            raw_sems.add('1st Semester')
-            raw_sems.add('2nd Semester')
-        else:
-            raw_sems.add(sem)
-    semesters_present = sorted(raw_sems)
+ 
+    semesters_present = sorted({s['semester'] for s in schedules_list if s['semester']})
     sem_stats = {}
     for sem in semesters_present:
-        sem_rows = [s for s in schedules_list
-                    if (s['semester'] or s['subject_semester'] or '') in (sem, 'Whole Year')]
+        sem_rows = [s for s in schedules_list if s['semester'] == sem]
         sem_stats[sem] = {
             'classes':  len(sem_rows),
             'days':     len(set(s['day']        for s in sem_rows)),
             'sections': len(set(s['section_id'] for s in sem_rows)),
         }
-
+ 
+    all_sections = conn.execute(
+        "SELECT id, grade_level, section_name FROM sections ORDER BY grade_level, section_name"
+    ).fetchall()
+    all_strands = conn.execute(
+        "SELECT id, strand_code, strand_name FROM strands ORDER BY strand_code"
+    ).fetchall()
+ 
     conn.close()
     return render_template('teacher_schedule.html',
                            teacher=teacher,
@@ -831,8 +828,10 @@ def teacher_schedule(tid):
                            days_active=days_active,
                            sections_count=sections_count,
                            semesters=semesters_present,
-                           sem_stats=sem_stats)
-
+                           sem_stats=sem_stats,
+                           all_sections=all_sections,
+                           all_strands=all_strands)
+    
 # ── SUBJECTS ──
 @app.route('/subjects')
 @login_required
@@ -999,7 +998,7 @@ def api_all_subjects():
 def api_strand_subjects(stid):
     conn = get_db()
     subs = conn.execute("""
-        SELECT sub.id, sub.subject_name, sub.subject_code, sub.grade_level
+        SELECT sub.id, sub.subject_name, sub.subject_code, sub.grade_level, sub.semester
         FROM subjects sub
         JOIN strand_subjects ss ON ss.subject_id=sub.id
         WHERE ss.strand_id=?
