@@ -12,10 +12,9 @@
     <input type="hidden" name="semester" value="{{ eff_sem }}">
     <select name="period" class="form-control" style="width:140px;padding:6px 10px;font-size:13px;">
       <option value="all">All Periods</option>
-      <option value="Prelim">Prelim</option>
-      <option value="Midterm">Midterm</option>
-      <option value="Semi-Final">Semi-Final</option>
-      <option value="Final">Final</option>
+      <option value="1st Term">1st Term</option>
+      <option value="2nd Term">2nd Term</option>
+      <option value="3rd Term">3rd Term</option>
     </select>
     <button type="submit" class="btn btn-secondary">
       <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
@@ -51,8 +50,7 @@
 
 .p-group { border-left:2px solid var(--border); }
 .p-header { background:#f8fafc; font-size:11px; font-weight:800; text-align:center; padding:8px 4px !important; }
-.p-prelim    { color:#2563eb; } .p-midterm   { color:#7c3aed; }
-.p-semifinal { color:#d97706; } .p-final     { color:#16a34a; }
+.p-term1     { color:#2563eb; } .p-term2     { color:#7c3aed; } .p-term3     { color:#16a34a; }
 
 .status-pill { display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:99px;font-size:10px;font-weight:700; }
 .status-Draft     { background:#f1f5f9;color:#64748b;border:1px solid #cbd5e1; }
@@ -98,7 +96,7 @@
       <thead>
         <tr>
           <th class="col-name" rowspan="2" style="min-width:160px;text-align:left;padding-left:16px;">Student</th>
-          {% set period_classes = {'Prelim':'p-prelim','Midterm':'p-midterm','Semi-Final':'p-semifinal','Final':'p-final'} %}
+          {% set period_classes = {'1st Term':'p-term1','2nd Term':'p-term2','3rd Term':'p-term3'} %}
           {% for q in quarters %}{% if q in open_periods %}
           <th class="p-header {{ period_classes[q] }} p-group" colspan="4">
             <div style="display:flex;align-items:center;justify-content:center;gap:6px;">

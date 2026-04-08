@@ -95,10 +95,9 @@
       <thead>
         <tr>
           <th class="col-sub">Subject</th>
-          <th>Prelim</th>
-          <th>Midterm</th>
-          <th>Semi-Final</th>
-          <th>Final</th>
+          <th>1st Term</th>
+          <th>2nd Term</th>
+          <th>3rd Term</th>
           <th>Average</th>
           <th>Remarks</th>
         </tr>
@@ -122,7 +121,7 @@
           <div style="font-weight:600;">{{ sr.subject.subject_name }}</div>
           <div style="font-size:11px;color:var(--text-muted);">{{ sr.subject.subject_code }}{% if sr.subject.semester == 'Whole Year' %} · <span style="color:#b45309;">WY</span>{% endif %}</div>
         </td>
-        {% for q in ['Prelim','Midterm','Semi-Final','Final'] %}
+        {% for q in ['1st Term','2nd Term','3rd Term'] %}
         {% if q in sr.quarters %}
         {% set qd = sr.quarters[q] %}
         <td>

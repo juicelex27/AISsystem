@@ -3,49 +3,124 @@
 {% block page_title %}Sections{% endblock %}
 {% block page_subtitle %}Manage class sections — click a card to view its schedule{% endblock %}
 {% block header_actions %}
-  {% set any_schedules = sections_data | selectattr('schedule_count') | list %}
-  {% if any_schedules %}
-  <div class="dropdown-wrap" id="clearDropdownWrap">
-    <button class="btn btn-danger" onclick="toggleClearDropdown(event)">
-      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-      Clear Schedule
-      <svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;margin-left:2px;"><path d="M7 10l5 5 5-5z"/></svg>
-    </button>
-    <div class="dropdown-menu" id="clearDropdownMenu" style="display:none;">
-      {% for item in sections_data %}
-      {% if item.schedule_count > 0 %}
-      {% set entry_word = 'entry' if item.schedule_count == 1 else 'entries' %}
-      <form method="POST" action="{{ url_for('flush_schedule', sec_id=item.section.id) }}"
-            onsubmit="return confirm('Clear all {{ item.schedule_count }} schedule {{ entry_word }} for {{ item.section.section_name }}? This cannot be undone.')">
-        <button type="submit" class="dropdown-item">
-          <span>
-            <span style="font-weight:600;">Gr.{{ item.section.grade_level }} — {{ item.section.section_name }}</span>
-            <span style="font-size:11px;color:#9ca3af;display:block;">{{ item.schedule_count }} {{ entry_word }}</span>
-          </span>
-        </button>
-      </form>
-      {% endif %}
-      {% endfor %}
-    </div>
-  </div>
-  {% endif %}
+  <button class="btn btn-danger" onclick="openModal('clearScheduleModal')">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+    Clear Schedule
+  </button>
   <button class="btn btn-primary" onclick="openModal('addSectionModal')">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
     Add Section
   </button>
 {% endblock %}
 
+{% block extra_css %}
+<style>
+/* ── GRADE TABS ── */
+.grade-tabs {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  padding: 0 0 20px 0;
+}
+.grade-tab {
+  padding: 7px 18px; border-radius: 99px; font-size: 13px; font-weight: 600;
+  border: 1.5px solid var(--border); background: var(--bg-white);
+  color: var(--text-secondary); cursor: pointer; transition: all .15s;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.grade-tab:hover { border-color: rgba(160,24,80,.4); color: rgba(160,24,80,1); }
+.grade-tab.active {
+  background: var(--brand-gradient); border-color: transparent;
+  color: white; box-shadow: 0 2px 8px rgba(160,24,80,.25);
+}
+.grade-tab .tab-count {
+  background: rgba(255,255,255,.25); border-radius: 99px;
+  padding: 0 7px; font-size: 11px; font-weight: 700; line-height: 1.6;
+}
+.grade-tab:not(.active) .tab-count {
+  background: var(--bg-page); color: var(--text-muted);
+}
+
+/* ── SECTION SEARCH (in modal) ── */
+.section-search-input {
+  width: 100%; padding: 9px 14px;
+  border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+  font-family: 'Inter', sans-serif; font-size: 14px;
+  color: var(--text-primary); background: var(--bg-white);
+  outline: none; transition: border-color .2s;
+  margin-bottom: 10px;
+}
+.section-search-input:focus { border-color: rgba(160,24,80,.5); box-shadow: 0 0 0 3px rgba(160,24,80,.1); }
+
+.section-list {
+  max-height: 260px; overflow-y: auto;
+  border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-white);
+}
+.section-list-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 14px; cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background .12s;
+}
+.section-list-item:last-child { border-bottom: none; }
+.section-list-item:hover { background: var(--bg-page); }
+.section-list-item.selected {
+  background: rgba(160,24,80,.06);
+  border-left: 3px solid rgba(160,24,80,.8);
+}
+.section-list-item .sli-badge {
+  font-size: 11px; font-weight: 700; padding: 2px 8px;
+  border-radius: 99px; background: var(--bg-page);
+  color: var(--text-secondary); flex-shrink: 0;
+}
+.section-list-item .sli-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.section-list-item .sli-meta { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+.section-list-item .sli-check {
+  margin-left: auto; width: 18px; height: 18px; border-radius: 50%;
+  background: rgba(160,24,80,.8); display: none;
+  align-items: center; justify-content: center; flex-shrink: 0;
+}
+.section-list-item.selected .sli-check { display: flex; }
+.section-list-item .sli-check svg { width: 11px; height: 11px; fill: white; }
+
+.clear-confirm-box {
+  margin-top: 14px; padding: 12px 14px;
+  border-radius: 8px; font-size: 13px;
+  background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
+  display: none;
+}
+.clear-confirm-box strong { display: block; margin-bottom: 4px; font-size: 14px; }
+</style>
+{% endblock %}
+
 {% block content %}
 
 {% if sections_data %}
-<div class="sections-grid">
+
+<!-- Grade Level Tabs -->
+{% set all_grades = sections_data | map(attribute='section') | map(attribute='grade_level') | list | unique | sort %}
+<div class="grade-tabs">
+  <button class="grade-tab active" data-grade="all" onclick="filterGrade('all', this)">
+    All
+    <span class="tab-count">{{ sections_data | length }}</span>
+  </button>
+  {% for grade in all_grades %}
+  {% set count = sections_data | selectattr('section.grade_level', 'equalto', grade) | list | length %}
+  <button class="grade-tab" data-grade="{{ grade }}" onclick="filterGrade('{{ grade }}', this)">
+    Grade {{ grade }}
+    <span class="tab-count">{{ count }}</span>
+  </button>
+  {% endfor %}
+</div>
+
+<!-- Section Cards -->
+<div class="sections-grid" id="sectionsGrid">
   {% for item in sections_data %}
   {% set sec = item.section %}
   {% set cnt = item.schedule_count %}
   {% set scnt = item.student_count %}
   {% set slim = item.student_limit %}
   {% set slots = slim - scnt %}
-  <div class="section-card">
+  <div class="section-card" data-grade="{{ sec.grade_level }}">
     <div class="section-card-header">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
         <div class="section-grade-badge">Grade {{ sec.grade_level }}</div>
@@ -97,7 +172,6 @@
         </form>
       </div>
       <div style="display:flex;gap:6px;">
-
         <a href="{{ url_for('section_student_list', sec_id=sec.id) }}" class="btn btn-secondary btn-sm">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
           Students
@@ -111,6 +185,18 @@
   </div>
   {% endfor %}
 </div>
+
+<!-- Empty state when tab filter yields nothing -->
+<div id="noSectionsMsg" style="display:none;">
+  <div class="content-card">
+    <div class="empty-state">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm13 0h-3v3h-3v3h3v3h3v-3h3v-3h-3z"/></svg>
+      <h3>No sections for this grade level</h3>
+      <p>Switch to another tab or add a new section.</p>
+    </div>
+  </div>
+</div>
+
 {% else %}
 <div class="content-card">
   <div class="empty-state">
@@ -120,6 +206,81 @@
   </div>
 </div>
 {% endif %}
+
+
+<!-- ── CLEAR SCHEDULE MODAL ── -->
+<div class="modal-overlay" id="clearScheduleModal">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header" style="background:#fef2f2;border-bottom:1px solid #fecaca;">
+      <h3 style="color:#b91c1c;display:flex;align-items:center;gap:8px;">
+        <svg viewBox="0 0 24 24" fill="currentColor" style="width:20px;height:20px;flex-shrink:0;">
+          <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+        </svg>
+        Clear Section Schedule
+      </h3>
+      <button class="modal-close" onclick="closeModal('clearScheduleModal')">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">
+        Search and select a section to clear its entire schedule. This <strong>cannot be undone</strong>.
+      </p>
+
+      <!-- Search -->
+      <input type="text" class="section-search-input" id="clearSectionSearch"
+             placeholder="Search by section name or grade…"
+             oninput="filterSectionList()">
+
+      <!-- Section list -->
+      <div class="section-list" id="clearSectionList">
+        {% for item in sections_data %}
+        {% set sec = item.section %}
+        {% set cnt = item.schedule_count %}
+        <div class="section-list-item"
+             data-id="{{ sec.id }}"
+             data-name="{{ sec.section_name | lower }}"
+             data-grade="{{ sec.grade_level }}"
+             data-count="{{ cnt }}"
+             data-label="Grade {{ sec.grade_level }} – {{ sec.section_name }}"
+             onclick="selectClearSection(this)">
+          <div class="sli-badge">Gr. {{ sec.grade_level }}</div>
+          <div>
+            <div class="sli-name">{{ sec.section_name }}</div>
+            <div class="sli-meta">
+              {{ cnt }} schedule entr{{ 'ies' if cnt != 1 else 'y' }}
+              {% if sec.strand_code %}&nbsp;·&nbsp; {{ sec.strand_code }}{% endif %}
+            </div>
+          </div>
+          <div class="sli-check">
+            <svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div id="noSectionSearchResult" style="display:none;padding:16px;text-align:center;font-size:13px;color:var(--text-muted);">
+        No sections match your search.
+      </div>
+
+      <!-- Confirmation box — shown after selection -->
+      <div class="clear-confirm-box" id="clearConfirmBox">
+        <strong id="clearConfirmTitle"></strong>
+        <span id="clearConfirmDesc"></span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal('clearScheduleModal')">Cancel</button>
+      <form id="clearScheduleForm" method="POST" action="" style="display:inline;">
+        <button type="submit" id="clearScheduleBtn" class="btn btn-danger" disabled
+                onclick="return confirmClear()">
+          <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;">
+            <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+          </svg>
+          Clear Schedule
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
 
 
 <!-- ── ADD SECTION MODAL ── -->
@@ -137,7 +298,7 @@
             <select name="grade_level" class="form-control" required>
               <option value="">Select Grade</option>
               {% for g in ['7','8','9','10','11','12'] %}
-              <option value="Grade {{ g }}">Grade {{ g }}</option>
+              <option value="{{ g }}">Grade {{ g }}</option>
               {% endfor %}
             </select>
           </div>
@@ -196,7 +357,7 @@
             <label>Grade Level</label>
             <select id="edit_grade_level_sec" name="grade_level" class="form-control" required>
               {% for g in ['7','8','9','10','11','12'] %}
-              <option value="Grade {{ g }}">Grade {{ g }}</option>
+              <option value="{{ g }}">Grade {{ g }}</option>
               {% endfor %}
             </select>
           </div>
@@ -239,41 +400,104 @@
   </div>
 </div>
 
-
-
-
 {% endblock %}
 
-{% block extra_css %}
-<style>
-.dropdown-wrap { position: relative; display: inline-block; }
-.dropdown-menu {
-  position: absolute; right: 0; top: calc(100% + 6px);
-  background: #fff; border: 1px solid var(--border);
-  border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.12);
-  min-width: 220px; z-index: 999; overflow: hidden;
-  padding: 4px 0;
-}
-.dropdown-item {
-  display: flex; align-items: center; gap: 10px;
-  width: 100%; padding: 9px 14px; background: none; border: none;
-  text-align: left; cursor: pointer; font-size: 13px;
-  color: var(--text-primary); transition: background .12s;
-}
-.dropdown-item:hover { background: #fef2f2; color: #b91c1c; }
-</style>
-{% endblock %}
 
 {% block extra_js %}
 <script>
-function toggleClearDropdown(e) {
-  e.stopPropagation();
-  const menu = document.getElementById('clearDropdownMenu');
-  menu.style.display = menu.style.display === 'none' ? '' : 'none';
+// ── GRADE LEVEL TABS ──────────────────────────────────────────
+function filterGrade(grade, btn) {
+  document.querySelectorAll('.grade-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+
+  const cards  = document.querySelectorAll('.section-card');
+  let   visible = 0;
+  cards.forEach(card => {
+    const match = grade === 'all' || card.dataset.grade === grade;
+    card.style.display = match ? '' : 'none';
+    if (match) visible++;
+  });
+
+  document.getElementById('noSectionsMsg').style.display = visible === 0 ? '' : 'none';
 }
-document.addEventListener('click', () => {
-  const menu = document.getElementById('clearDropdownMenu');
-  if (menu) menu.style.display = 'none';
+
+// ── CLEAR SCHEDULE MODAL ──────────────────────────────────────
+let selectedClearId    = null;
+let selectedClearLabel = '';
+let selectedClearCount = 0;
+
+function filterSectionList() {
+  const q     = document.getElementById('clearSectionSearch').value.toLowerCase();
+  const items = document.querySelectorAll('.section-list-item');
+  let   shown = 0;
+
+  items.forEach(item => {
+    const match = !q
+      || item.dataset.name.includes(q)
+      || item.dataset.grade.includes(q)
+      || ('grade ' + item.dataset.grade).includes(q);
+    item.style.display = match ? '' : 'none';
+    if (match) shown++;
+  });
+
+  document.getElementById('noSectionSearchResult').style.display = shown === 0 ? '' : 'none';
+}
+
+function selectClearSection(el) {
+  // Deselect all
+  document.querySelectorAll('.section-list-item').forEach(i => i.classList.remove('selected'));
+
+  // Select clicked
+  el.classList.add('selected');
+  selectedClearId    = el.dataset.id;
+  selectedClearLabel = el.dataset.label;
+  selectedClearCount = parseInt(el.dataset.count, 10);
+
+  // Update form action
+  document.getElementById('clearScheduleForm').action =
+    `/schedule/${selectedClearId}/flush`;
+
+  // Show confirmation box
+  const box  = document.getElementById('clearConfirmBox');
+  const title = document.getElementById('clearConfirmTitle');
+  const desc  = document.getElementById('clearConfirmDesc');
+
+  title.textContent = selectedClearLabel;
+  desc.textContent  = selectedClearCount > 0
+    ? `This will permanently delete all ${selectedClearCount} schedule entr${selectedClearCount !== 1 ? 'ies' : 'y'} for this section.`
+    : 'This section has no schedule entries to clear.';
+
+  box.style.display = '';
+
+  // Enable button only if there are entries to clear
+  document.getElementById('clearScheduleBtn').disabled = selectedClearCount === 0;
+}
+
+function confirmClear() {
+  return confirm(
+    `Are you sure you want to clear all ${selectedClearCount} schedule entr${selectedClearCount !== 1 ? 'ies' : 'y'} for ${selectedClearLabel}? This cannot be undone.`
+  );
+}
+
+// Reset modal state on close
+document.getElementById('clearScheduleModal').addEventListener('click', function(e) {
+  if (e.target === this) resetClearModal();
 });
+document.querySelector('#clearScheduleModal .modal-close').addEventListener('click', resetClearModal);
+
+function resetClearModal() {
+  selectedClearId    = null;
+  selectedClearLabel = '';
+  selectedClearCount = 0;
+  document.getElementById('clearSectionSearch').value = '';
+  document.querySelectorAll('.section-list-item').forEach(i => {
+    i.classList.remove('selected');
+    i.style.display = '';
+  });
+  document.getElementById('noSectionSearchResult').style.display = 'none';
+  document.getElementById('clearConfirmBox').style.display = 'none';
+  document.getElementById('clearScheduleBtn').disabled = true;
+  document.getElementById('clearScheduleForm').action = '';
+}
 </script>
 {% endblock %}

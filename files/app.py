@@ -3,6 +3,7 @@ import sqlite3
 import hashlib
 import csv
 import io
+import random
 from functools import wraps
 
 app = Flask(__name__)
@@ -125,12 +126,10 @@ def init_db():
             subject_id          INTEGER NOT NULL,
             section_id          INTEGER NOT NULL,
             semester            TEXT NOT NULL DEFAULT '',
-            quarter             TEXT NOT NULL CHECK(quarter IN ('Prelim','Midterm','Semi-Final','Final')),
+            quarter             TEXT NOT NULL CHECK(quarter IN ('1st Term','2nd Term','3rd Term')),
             written_works       REAL,
             performance_tasks   REAL,
             quarterly_assessment REAL,
-            midterm             REAL,
-            finals              REAL,
             created_at          TEXT DEFAULT (datetime('now')),
             updated_at          TEXT DEFAULT (datetime('now')),
             UNIQUE(student_id, subject_id, section_id, semester, quarter),
@@ -144,7 +143,7 @@ def init_db():
             subject_id  INTEGER NOT NULL,
             section_id  INTEGER NOT NULL,
             semester    TEXT NOT NULL DEFAULT '',
-            quarter     TEXT NOT NULL CHECK(quarter IN ('Prelim','Midterm','Semi-Final','Final')),
+            quarter     TEXT NOT NULL CHECK(quarter IN ('1st Term','2nd Term','3rd Term')),
             status      TEXT NOT NULL DEFAULT 'Draft' CHECK(status IN ('Draft','Submitted','Approved','Locked')),
             submitted_at TEXT,
             approved_at TEXT,
@@ -217,7 +216,7 @@ def init_db():
                 "    subject_id INTEGER NOT NULL,"
                 "    section_id INTEGER NOT NULL,"
                 "    semester TEXT NOT NULL DEFAULT '',"
-                "    quarter TEXT NOT NULL CHECK(quarter IN ('Prelim','Midterm','Semi-Final','Final')),"
+                "    quarter TEXT NOT NULL CHECK(quarter IN ('1st Term','2nd Term','3rd Term')),"
                 "    status TEXT NOT NULL DEFAULT 'Draft' CHECK(status IN ('Draft','Submitted','Approved','Locked')),"
                 "    submitted_at TEXT, approved_at TEXT, approved_by TEXT,"
                 "    locked_at TEXT, unlock_reason TEXT,"
@@ -348,9 +347,8 @@ def init_db():
                 "    subject_id INTEGER NOT NULL,"
                 "    section_id INTEGER NOT NULL,"
                 "    semester TEXT NOT NULL DEFAULT '',"
-                "    quarter TEXT NOT NULL CHECK(quarter IN ('Prelim','Midterm','Semi-Final','Final')),"
+                "    quarter TEXT NOT NULL CHECK(quarter IN ('1st Term','2nd Term','3rd Term')),"
                 "    written_works REAL, performance_tasks REAL, quarterly_assessment REAL,"
-                "    midterm REAL, finals REAL,"
                 "    created_at TEXT DEFAULT (datetime('now')),"
                 "    updated_at TEXT DEFAULT (datetime('now')),"
                 "    UNIQUE(student_id, subject_id, section_id, semester, quarter),"
@@ -360,9 +358,9 @@ def init_db():
                 ");"
                 "INSERT OR IGNORE INTO grades"
                 "    (student_id,subject_id,section_id,semester,quarter,"
-                "     written_works,performance_tasks,quarterly_assessment,midterm,finals,created_at,updated_at)"
+                "     written_works,performance_tasks,quarterly_assessment,created_at,updated_at)"
                 "    SELECT student_id,subject_id,section_id,COALESCE(semester,''),quarter,"
-                "           written_works,performance_tasks,quarterly_assessment,midterm,finals,created_at,updated_at"
+                "           written_works,performance_tasks,quarterly_assessment,created_at,updated_at"
                 "    FROM grades_old;"
                 "DROP TABLE grades_old;"
             )
@@ -404,13 +402,14 @@ def init_db():
             )
     except Exception:
         pass
-    # Rename Q1-Q4 to grading period names
-    # SQLite CHECK constraint blocks direct UPDATE, so we recreate the tables
+    # Rename Q1-Q4 and legacy Prelim/Midterm/Semi-Final/Final to 3-term names
+    # SQLite CHECK constraint blocks direct UPDATE, so we recreate the tables if needed
     try:
-        # Check if old Q1-style quarters exist
-        has_old = conn.execute("SELECT COUNT(*) FROM grades WHERE quarter IN ('Q1','Q2','Q3','Q4')").fetchone()[0]
-        if has_old:
-            # Temporarily drop CHECK by recreating grades table
+        grades_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='grades'").fetchone()
+        has_old_q = conn.execute("SELECT COUNT(*) FROM grades WHERE quarter IN ('Q1','Q2','Q3','Q4')").fetchone()[0]
+        has_legacy = grades_sql and "CHECK(quarter IN ('Prelim','Midterm','Semi-Final','Final'))" in (grades_sql['sql'] or '')
+
+        if has_old_q or has_legacy:
             conn.executescript("""
                 ALTER TABLE grades RENAME TO grades_old;
                 CREATE TABLE grades (
@@ -418,30 +417,49 @@ def init_db():
                     student_id          INTEGER NOT NULL,
                     subject_id          INTEGER NOT NULL,
                     section_id          INTEGER NOT NULL,
-                    quarter             TEXT NOT NULL,
+                    semester            TEXT NOT NULL DEFAULT '',
+                    quarter             TEXT NOT NULL CHECK(quarter IN ('1st Term','2nd Term','3rd Term')),
                     written_works       REAL,
                     performance_tasks   REAL,
                     quarterly_assessment REAL,
-                    midterm             REAL,
-                    finals              REAL,
                     created_at          TEXT DEFAULT (datetime('now')),
                     updated_at          TEXT DEFAULT (datetime('now')),
+                    UNIQUE(student_id, subject_id, section_id, semester, quarter),
                     FOREIGN KEY (student_id)  REFERENCES students(id)  ON DELETE CASCADE,
                     FOREIGN KEY (subject_id)  REFERENCES subjects(id)  ON DELETE CASCADE,
                     FOREIGN KEY (section_id)  REFERENCES sections(id)  ON DELETE CASCADE
                 );
-                INSERT INTO grades SELECT * FROM grades_old;
+                INSERT INTO grades (id,student_id,subject_id,section_id,semester,quarter,
+                                    written_works,performance_tasks,quarterly_assessment,created_at,updated_at)
+                    SELECT id,student_id,subject_id,section_id,semester,
+                           CASE quarter
+                             WHEN 'Q1' THEN '1st Term'
+                             WHEN 'Q2' THEN '2nd Term'
+                             WHEN 'Q3' THEN '3rd Term'
+                             WHEN 'Q4' THEN '3rd Term'
+                             WHEN 'Prelim' THEN '1st Term'
+                             WHEN 'Midterm' THEN '2nd Term'
+                             WHEN 'Semi-Final' THEN '3rd Term'
+                             WHEN 'Final' THEN '3rd Term'
+                             ELSE quarter
+                           END, written_works,performance_tasks,quarterly_assessment,created_at,updated_at
+                    FROM grades_old;
                 DROP TABLE grades_old;
             """)
-            for _old, _new in [('Q1','Prelim'),('Q2','Midterm'),('Q3','Semi-Final'),('Q4','Final')]:
-                conn.execute("UPDATE grades SET quarter=? WHERE quarter=?", (_new, _old))
-        # Now add CHECK constraint back via recreation if needed
+
+        # Map any residual old names to new names
+        for _old, _new in [('Prelim','1st Term'), ('Midterm','2nd Term'), ('Semi-Final','3rd Term'), ('Final','3rd Term')]:
+            conn.execute("UPDATE grades SET quarter=? WHERE quarter=?", (_new, _old))
+
     except Exception as _e:
         pass  # already migrated or no old data
 
     try:
+        gs_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='grade_submissions'").fetchone()
         has_old_sub = conn.execute("SELECT COUNT(*) FROM grade_submissions WHERE quarter IN ('Q1','Q2','Q3','Q4')").fetchone()[0]
-        if has_old_sub:
+        has_legacy_sub = gs_sql and "CHECK(quarter IN ('Prelim','Midterm','Semi-Final','Final'))" in (gs_sql['sql'] or '')
+
+        if has_old_sub or has_legacy_sub:
             conn.executescript("""
                 ALTER TABLE grade_submissions RENAME TO gs_old;
                 CREATE TABLE grade_submissions (
@@ -449,29 +467,80 @@ def init_db():
                     teacher_id  INTEGER,
                     subject_id  INTEGER NOT NULL,
                     section_id  INTEGER NOT NULL,
-                    quarter     TEXT NOT NULL,
-                    status      TEXT NOT NULL DEFAULT 'Draft',
+                    semester    TEXT NOT NULL DEFAULT '',
+                    quarter     TEXT NOT NULL CHECK(quarter IN ('1st Term','2nd Term','3rd Term')),
+                    status      TEXT NOT NULL DEFAULT 'Draft' CHECK(status IN ('Draft','Submitted','Approved','Locked')),
                     submitted_at TEXT,
                     approved_at TEXT,
                     approved_by TEXT,
                     locked_at   TEXT,
                     unlock_reason TEXT,
                     updated_at  TEXT DEFAULT (datetime('now')),
+                    UNIQUE(subject_id, section_id, semester, quarter),
                     FOREIGN KEY (subject_id)  REFERENCES subjects(id)  ON DELETE CASCADE,
                     FOREIGN KEY (section_id)  REFERENCES sections(id)  ON DELETE CASCADE
                 );
-                INSERT INTO grade_submissions SELECT * FROM gs_old;
+                INSERT INTO grade_submissions (id,teacher_id,subject_id,section_id,semester,quarter,status,submitted_at,approved_at,approved_by,locked_at,unlock_reason,updated_at)
+                    SELECT id,teacher_id,subject_id,section_id,semester,
+                           CASE quarter
+                             WHEN 'Q1' THEN '1st Term'
+                             WHEN 'Q2' THEN '2nd Term'
+                             WHEN 'Q3' THEN '3rd Term'
+                             WHEN 'Q4' THEN '3rd Term'
+                             WHEN 'Prelim' THEN '1st Term'
+                             WHEN 'Midterm' THEN '2nd Term'
+                             WHEN 'Semi-Final' THEN '3rd Term'
+                             WHEN 'Final' THEN '3rd Term'
+                             ELSE quarter
+                           END, status, submitted_at, approved_at, approved_by, locked_at, unlock_reason, updated_at
+                    FROM gs_old;
                 DROP TABLE gs_old;
             """)
-            for _old, _new in [('Q1','Prelim'),('Q2','Midterm'),('Q3','Semi-Final'),('Q4','Final')]:
-                conn.execute("UPDATE grade_submissions SET quarter=? WHERE quarter=?", (_new, _old))
+
+        for _old, _new in [('Prelim','1st Term'), ('Midterm','2nd Term'), ('Semi-Final','3rd Term'), ('Final','3rd Term')]:
+            conn.execute("UPDATE grade_submissions SET quarter=? WHERE quarter=?", (_new, _old))
+
     except Exception as _e:
         pass
 
     try:
-        for _old, _new in [('Q1','Prelim'),('Q2','Midterm'),('Q3','Semi-Final'),('Q4','Final')]:
+        for _old, _new in [('Q1','1st Term'),('Q2','2nd Term'),('Q3','3rd Term'),('Q4','3rd Term')]:
             conn.execute("UPDATE grade_edit_log SET quarter=? WHERE quarter=?", (_new, _old))
     except Exception as _e:
+        pass
+
+    # Migrate old 4-period grading names to 3-term names in existing data
+    try:
+        period_map = {
+            'Prelim': '1st Term',
+            'Midterm': '2nd Term',
+            'Semi-Final': '3rd Term',
+            'Final': '3rd Term'
+        }
+        for table in ('grades', 'grade_submissions', 'grade_edit_log'):
+            for old, new in period_map.items():
+                conn.execute(f"UPDATE {table} SET quarter=? WHERE quarter=?", (new, old))
+
+        # Migrate grading period settings and collapse duplicates after mapping
+        for old, new in period_map.items():
+            for row in conn.execute("SELECT id, semester FROM grading_period_settings WHERE period=?", (old,)).fetchall():
+                existing = conn.execute("SELECT id FROM grading_period_settings WHERE period=? AND semester=?", (new, row['semester'])).fetchone()
+                if existing:
+                    conn.execute("DELETE FROM grading_period_settings WHERE id=?", (row['id'],))
+                else:
+                    conn.execute("UPDATE grading_period_settings SET period=? WHERE id=?", (new, row['id']))
+
+        for sem in ('1st Semester', '2nd Semester', 'Whole Year'):
+            for period in ('1st Term', '2nd Term', '3rd Term'):
+                rows = conn.execute(
+                    "SELECT id FROM grading_period_settings WHERE semester=? AND period=? ORDER BY is_open DESC, id",
+                    (sem, period)
+                ).fetchall()
+                if len(rows) > 1:
+                    keep = rows[0]['id']
+                    for extra in rows[1:]:
+                        conn.execute("DELETE FROM grading_period_settings WHERE id=?", (extra['id'],))
+    except Exception:
         pass
 
     # Add semester column to grading_period_settings if missing
@@ -479,13 +548,12 @@ def init_db():
         conn.execute("ALTER TABLE grading_period_settings ADD COLUMN semester TEXT DEFAULT '1st Semester'")
     except Exception:
         pass
-    # Seed grading period settings with semester separation
-    # 1st Semester: Prelim, Midterm  |  2nd Semester: Semi-Final, Final
+    # Seed grading period settings for SHS semesters and JHS terms
     # Always ensure grading_period_settings has UNIQUE(period, semester)
     # Check by trying to insert a duplicate — if it fails with old constraint, recreate
     try:
         has_old = conn.execute(
-            "SELECT COUNT(*) FROM grading_period_settings WHERE period='Prelim'"
+            "SELECT COUNT(*) FROM grading_period_settings WHERE period='1st Term'"
         ).fetchone()[0] > 1
     except Exception:
         has_old = False
@@ -503,7 +571,7 @@ def init_db():
             "CREATE TABLE grading_period_settings_new ("
             "    id         INTEGER PRIMARY KEY AUTOINCREMENT,"
             "    period     TEXT NOT NULL,"
-            "    semester   TEXT NOT NULL DEFAULT '1st Semester',"
+            "    semester   TEXT NOT NULL DEFAULT 'Whole Year',"
             "    is_open    INTEGER NOT NULL DEFAULT 0,"
             "    opened_at  TEXT,"
             "    opened_by  TEXT,"
@@ -513,16 +581,14 @@ def init_db():
             "ALTER TABLE grading_period_settings_new RENAME TO grading_period_settings;"
         )
 
-    # Each semester has its own 4 periods
+    # Periods for each semester
     period_semesters = [
-        ('Prelim',     '1st Semester', 1),
-        ('Midterm',    '1st Semester', 0),
-        ('Semi-Final', '1st Semester', 0),
-        ('Final',      '1st Semester', 0),
-        ('Prelim',     '2nd Semester', 0),
-        ('Midterm',    '2nd Semester', 0),
-        ('Semi-Final', '2nd Semester', 0),
-        ('Final',      '2nd Semester', 0),
+        ('1st Term', '1st Semester', 1),
+        ('2nd Term', '1st Semester', 0),
+        ('3rd Term', '2nd Semester', 0),
+        ('1st Term', 'Whole Year', 1),
+        ('2nd Term', 'Whole Year', 0),
+        ('3rd Term', 'Whole Year', 0),
     ]
     for period, sem, default_open in period_semesters:
         existing = conn.execute(
@@ -567,6 +633,40 @@ def init_db():
                     ('admin', hash_password('admin123'), 'System Administrator'))
     conn.commit()
     conn.close()
+
+    # Drop unused midterm and finals columns from grades table (3-term system)
+    try:
+        # Check if columns exist
+        columns = [row['name'] for row in conn.execute("PRAGMA table_info(grades)").fetchall()]
+        if 'midterm' in columns or 'finals' in columns:
+            conn.executescript("""
+                ALTER TABLE grades RENAME TO grades_old;
+                CREATE TABLE grades (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    student_id          INTEGER NOT NULL,
+                    subject_id          INTEGER NOT NULL,
+                    section_id          INTEGER NOT NULL,
+                    semester            TEXT NOT NULL DEFAULT '',
+                    quarter             TEXT NOT NULL CHECK(quarter IN ('1st Term','2nd Term','3rd Term')),
+                    written_works       REAL,
+                    performance_tasks   REAL,
+                    quarterly_assessment REAL,
+                    created_at          TEXT DEFAULT (datetime('now')),
+                    updated_at          TEXT DEFAULT (datetime('now')),
+                    UNIQUE(student_id, subject_id, section_id, semester, quarter),
+                    FOREIGN KEY (student_id)  REFERENCES students(id)  ON DELETE CASCADE,
+                    FOREIGN KEY (subject_id)  REFERENCES subjects(id)  ON DELETE CASCADE,
+                    FOREIGN KEY (section_id)  REFERENCES sections(id)  ON DELETE CASCADE
+                );
+                INSERT INTO grades (id,student_id,subject_id,section_id,semester,quarter,
+                                   written_works,performance_tasks,quarterly_assessment,created_at,updated_at)
+                    SELECT id,student_id,subject_id,section_id,semester,quarter,
+                           written_works,performance_tasks,quarterly_assessment,created_at,updated_at
+                    FROM grades_old;
+                DROP TABLE grades_old;
+            """)
+    except Exception:
+        pass
 
 def any_role_required(f):
     @wraps(f)
@@ -699,27 +799,40 @@ def teachers():
     conn = get_db()
     tlist = conn.execute("SELECT * FROM teachers ORDER BY last_name").fetchall()
 
-    # Per-teacher workload: count distinct sections per semester (using sc.semester with fallback)
+    # Per-teacher workload: count distinct sections per semester.
+    # Whole Year entries count toward BOTH semesters.
     workload_rows = conn.execute("""
         SELECT sc.teacher_id,
                COALESCE(sc.semester, sub.semester) AS sem,
                COUNT(DISTINCT sc.section_id) AS cnt
         FROM schedules sc
         JOIN subjects sub ON sc.subject_id = sub.id
-        WHERE COALESCE(sc.semester, sub.semester) IN ('1st Semester','2nd Semester')
         GROUP BY sc.teacher_id, COALESCE(sc.semester, sub.semester)
     """).fetchall()
 
-    # Build dict: {teacher_id: {'1st Semester': n, '2nd Semester': n}}
-    workload_map = {}
+    # Build base map from direct semester rows
+    raw_map = {}
     for r in workload_rows:
-        workload_map.setdefault(r['teacher_id'], {})[r['sem']] = r['cnt']
+        raw_map.setdefault(r['teacher_id'], {})[r['sem'] or ''] = r['cnt']
+
+    # For Whole Year entries, add their section counts into both 1st and 2nd
+    workload_map = {}
+    for tid, sems in raw_map.items():
+        workload_map[tid] = {
+            '1st Semester': sems.get('1st Semester', 0),
+            '2nd Semester': sems.get('2nd Semester', 0),
+        }
+        wy = sems.get('Whole Year', 0)
+        if wy:
+            workload_map[tid]['1st Semester'] += wy
+            workload_map[tid]['2nd Semester'] += wy
 
     conn.close()
-    return render_template('teachers.html', teachers=tlist,
+    return render_template('teachers.html',
+                           teachers=tlist,
                            workload_map=workload_map,
                            max_sections=MAX_SECTIONS_PER_TEACHER)
-
+    
 @app.route('/teachers/add', methods=['POST'])
 @login_required
 def add_teacher():
@@ -804,10 +917,15 @@ def teacher_schedule(tid):
     days_active    = len(set(s['day']        for s in schedules_list))
     sections_count = len(set(s['section_id'] for s in schedules_list))
  
-    semesters_present = sorted({s['semester'] for s in schedules_list if s['semester']})
+    # Exclude 'Whole Year' from semester tabs — those entries appear in both views
+    semesters_present = sorted({
+        s['semester'] for s in schedules_list
+        if s['semester'] and s['semester'] != 'Whole Year'
+    })
     sem_stats = {}
     for sem in semesters_present:
-        sem_rows = [s for s in schedules_list if s['semester'] == sem]
+        # Include Whole Year entries in each semester's count
+        sem_rows = [s for s in schedules_list if s['semester'] in (sem, 'Whole Year')]
         sem_stats[sem] = {
             'classes':  len(sem_rows),
             'days':     len(set(s['day']        for s in sem_rows)),
@@ -831,7 +949,7 @@ def teacher_schedule(tid):
                            sem_stats=sem_stats,
                            all_sections=all_sections,
                            all_strands=all_strands)
-    
+ 
 # ── SUBJECTS ──
 @app.route('/subjects')
 @login_required
@@ -993,6 +1111,7 @@ def api_all_subjects():
     conn.close()
     return jsonify([dict(s) for s in subs])
 
+
 @app.route('/api/strand/<int:stid>/subjects')
 @login_required
 def api_strand_subjects(stid):
@@ -1006,6 +1125,20 @@ def api_strand_subjects(stid):
     """, (stid,)).fetchall()
     conn.close()
     return jsonify([dict(s) for s in subs])
+
+@app.route('/api/subject/<int:subject_id>/teachers/<int:section_id>')
+@login_required
+def api_subject_teachers(subject_id, section_id):
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT t.id, t.first_name, t.last_name, t.email
+        FROM teachers t
+        JOIN assignments a ON a.teacher_id = t.id
+        WHERE a.subject_id = ? AND a.section_id = ?
+        ORDER BY t.last_name, t.first_name
+    """, (subject_id, section_id)).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
 
 # ── SECTIONS ──
 @app.route('/sections')
@@ -1349,12 +1482,15 @@ def api_check_conflict():
     # Resolve semester: honour semester_override for Whole Year subjects
     sub_sem_row = conn.execute("SELECT semester FROM subjects WHERE id=?", (subject_id,)).fetchone() if subject_id else None
     raw_sem     = (sub_sem_row['semester'] or '') if sub_sem_row else ''
-    if raw_sem == 'Whole Year' and semester_override in ('1st Semester', '2nd Semester'):
-        check_sem = semester_override
-    elif raw_sem and raw_sem != 'Whole Year':
+    if raw_sem == 'Whole Year':
+        if semester_override in ('1st Semester', '2nd Semester', 'Whole Year'):
+            check_sem = semester_override
+        else:
+            check_sem = raw_sem
+    elif raw_sem:
         check_sem = raw_sem
     else:
-        check_sem = raw_sem or None
+        check_sem = None
     conflicts = find_conflicts(conn, section_id, teacher_id, day,
                                time_start, time_end, room, exclude_id,
                                subject_id=subject_id, semester=check_sem)
@@ -1375,8 +1511,10 @@ def api_check_conflict():
 def schedule(sec_id):
     conn = get_db()
     section = conn.execute("""
-        SELECT s.*, t.first_name, t.last_name
-        FROM sections s LEFT JOIN teachers t ON s.adviser_id=t.id
+        SELECT s.*, t.first_name, t.last_name, st.strand_code
+        FROM sections s
+        LEFT JOIN teachers t ON s.adviser_id=t.id
+        LEFT JOIN strands st ON s.strand_id=st.id
         WHERE s.id=?
     """, (sec_id,)).fetchone()
     if not section:
@@ -1413,12 +1551,65 @@ def schedule(sec_id):
     semesters_present = sorted(raw_sems)
     strands_list  = conn.execute("SELECT * FROM strands ORDER BY strand_code").fetchall()
     teachers_list = conn.execute("SELECT id,first_name,last_name FROM teachers ORDER BY last_name").fetchall()
+    teachers_json = [dict(t) for t in teachers_list]
 
     # BUG 4 FIX: pass all subjects so JS fallback is never empty
     all_subjects = conn.execute(
-        "SELECT id, subject_name, subject_code, grade_level FROM subjects ORDER BY subject_name"
+        "SELECT id, subject_name, subject_code, grade_level, semester FROM subjects ORDER BY subject_name"
     ).fetchall()
     all_subjects_json = [dict(s) for s in all_subjects]
+
+    # Check how many subjects are already scheduled for this section (any subjects, not just JHS)
+    total_scheduled_subjects = conn.execute(
+        "SELECT COUNT(DISTINCT subject_id) FROM schedules WHERE section_id = ?",
+        (sec_id,)
+    ).fetchone()[0]
+
+    auto_jhs_subjects = []
+    show_auto_schedule_button = False
+    if section['grade_level'] in ('Grade 7', 'Grade 8', 'Grade 9', 'Grade 10'):
+        # For JHS, show subjects based on the section's strand
+        if section['strand_id']:
+            # Section has a strand - show only subjects for that strand
+            rows = conn.execute("""
+                SELECT sub.id AS subject_id, sub.subject_name, sub.subject_code,
+                       COALESCE(a.teacher_id, COALESCE(sch.teacher_id, '')) AS teacher_id,
+                       COALESCE(t.first_name, t2.first_name) AS teacher_first,
+                       COALESCE(t.last_name, t2.last_name) AS teacher_last,
+                       COALESCE(sch.day, '') AS scheduled_day,
+                       COALESCE(sch.time_start, '') AS scheduled_time_start,
+                       COALESCE(sch.id, '') AS schedule_id
+                FROM subjects sub
+                JOIN strand_subjects ss ON ss.subject_id = sub.id
+                LEFT JOIN assignments a ON a.subject_id = sub.id AND a.section_id = ?
+                LEFT JOIN teachers t ON t.id = a.teacher_id
+                LEFT JOIN schedules sch ON sch.subject_id = sub.id AND sch.section_id = ?
+                LEFT JOIN teachers t2 ON t2.id = sch.teacher_id
+                WHERE ss.strand_id = ? AND sub.grade_level IN ('7','8','9','10')
+                ORDER BY sub.subject_name
+            """, (sec_id, sec_id, section['strand_id'])).fetchall()
+        else:
+            # Section has no strand - show all JHS subjects
+            rows = conn.execute("""
+                SELECT sub.id AS subject_id, sub.subject_name, sub.subject_code,
+                       COALESCE(a.teacher_id, COALESCE(sch.teacher_id, '')) AS teacher_id,
+                       COALESCE(t.first_name, t2.first_name) AS teacher_first,
+                       COALESCE(t.last_name, t2.last_name) AS teacher_last,
+                       COALESCE(sch.day, '') AS scheduled_day,
+                       COALESCE(sch.time_start, '') AS scheduled_time_start,
+                       COALESCE(sch.id, '') AS schedule_id
+                FROM subjects sub
+                LEFT JOIN assignments a ON a.subject_id = sub.id AND a.section_id = ?
+                LEFT JOIN teachers t ON t.id = a.teacher_id
+                LEFT JOIN schedules sch ON sch.subject_id = sub.id AND sch.section_id = ?
+                LEFT JOIN teachers t2 ON t2.id = sch.teacher_id
+                WHERE sub.grade_level IN ('7','8','9','10')
+                ORDER BY sub.subject_name
+            """, (sec_id, sec_id)).fetchall()
+        auto_jhs_subjects = [dict(r) for r in rows]
+        
+        # Show auto-schedule button if there are available slots (less than 8 total subjects scheduled)
+        show_auto_schedule_button = total_scheduled_subjects < 8
 
     conn.close()
     return render_template('schedule.html',
@@ -1426,9 +1617,411 @@ def schedule(sec_id):
                            schedules=schedules_list,
                            strands=strands_list,
                            teachers=teachers_list,
+                           teachers_json=teachers_json,
                            semesters=semesters_present,
                            max_sections=MAX_SECTIONS_PER_TEACHER,
-                           all_subjects_json=all_subjects_json)
+                           all_subjects_json=all_subjects_json,
+                           auto_jhs_subjects=auto_jhs_subjects,
+                           show_auto_schedule_button=show_auto_schedule_button)
+
+
+@app.route('/schedule/<int:sec_id>/auto_create', methods=['POST'])
+@login_required
+def auto_create_schedule(sec_id):
+    data = request.get_json(silent=True)
+    subjects = []
+    homeroom_id = None
+    if data and isinstance(data, dict):
+        subjects = data.get('subjects') or []
+        homeroom_id = data.get('homeroom_subject')
+    else:
+        form_subjects = request.form.getlist('subject_id[]') or request.form.getlist('subject_id')
+        form_teachers = request.form.getlist('teacher_id[]') or request.form.getlist('teacher_id')
+        form_homerooms = request.form.getlist('is_homeroom[]') or []
+        form_homeroom = request.form.get('homeroom_subject')
+        homeroom_id = form_homeroom or None
+        if form_subjects and form_teachers and len(form_subjects) == len(form_teachers):
+            subjects = [
+                {
+                    'subject_id': sid,
+                    'teacher_id': tid,
+                    'is_homeroom': form_homerooms[idx] == '1' if idx < len(form_homerooms) else (str(sid) == str(homeroom_id))
+                }
+                for idx, (sid, tid) in enumerate(zip(form_subjects, form_teachers))
+            ]
+
+    if not subjects or not isinstance(subjects, list):
+        flash('No subjects were provided for automatic schedule generation.', 'danger')
+        return redirect(url_for('schedule', sec_id=sec_id))
+
+    conn = get_db()
+    section = conn.execute(
+        "SELECT s.*, st.strand_code FROM sections s LEFT JOIN strands st ON s.strand_id=st.id WHERE s.id=?",
+        (sec_id,)
+    ).fetchone()
+    if not section or section['grade_level'] not in ('Grade 7', 'Grade 8', 'Grade 9', 'Grade 10'):
+        conn.close()
+        flash('Automatic schedule generation is only available for JHS sections.', 'danger')
+        return redirect(url_for('schedule', sec_id=sec_id))
+
+    parsed = []
+    seen_ids = set()
+    teacher_workload = {}  # Track workload per teacher for THIS batch
+    
+    for item in subjects:
+        subject_id = item.get('subject_id')
+        teacher_id = item.get('teacher_id')
+        is_homeroom = item.get('is_homeroom')
+        
+        if not subject_id or not teacher_id:
+            conn.close()
+            flash('Every subject requires a teacher selection.', 'danger')
+            return redirect(url_for('schedule', sec_id=sec_id))
+        
+        subject_id = int(subject_id)
+        teacher_id = int(teacher_id)
+        
+        # Track teacher workload - this is for the new subjects being added
+        if teacher_id not in teacher_workload:
+            teacher_workload[teacher_id] = set()
+        teacher_workload[teacher_id].add(sec_id)
+        
+        # Check for duplicate subjects in THIS batch
+        if subject_id in seen_ids:
+            conn.close()
+            flash('Duplicate subject selection detected.', 'danger')
+            return redirect(url_for('schedule', sec_id=sec_id))
+        seen_ids.add(subject_id)
+        
+        parsed.append({
+            'subject_id': subject_id,
+            'teacher_id': teacher_id,
+            'is_homeroom': str(is_homeroom) == '1' if is_homeroom else False
+        })
+    
+    # Validate teacher workload - ensure no teacher teaches more than MAX_SECTIONS_PER_TEACHER sections
+    for teacher_id, sections in teacher_workload.items():
+        # Get existing sections this teacher teaches (any semester)
+        existing_sections = conn.execute("""
+            SELECT DISTINCT sc.section_id FROM schedules sc
+            WHERE sc.teacher_id = ?
+        """, (teacher_id,)).fetchall()
+        existing_section_ids = {str(r['section_id']) for r in existing_sections}
+        
+        # Check if adding would exceed limit
+        total_sections = len(existing_section_ids.union(sections))
+        if total_sections > MAX_SECTIONS_PER_TEACHER:
+            teacher = conn.execute("SELECT first_name || ' ' || last_name AS name FROM teachers WHERE id=?", (teacher_id,)).fetchone()
+            conn.close()
+            teacher_name = teacher['name'] if teacher else f"Teacher #{teacher_id}"
+            flash(f'{teacher_name} would exceed maximum {MAX_SECTIONS_PER_TEACHER} sections. Currently has {len(existing_section_ids)}, would have {total_sections}.', 'danger')
+            return redirect(url_for('schedule', sec_id=sec_id))
+
+    homeroom_count = sum(1 for item in parsed if item['is_homeroom'])
+    if homeroom_count > 1:
+        conn.close()
+        flash('Please select only one homeroom subject.', 'danger')
+        return redirect(url_for('schedule', sec_id=sec_id))
+
+    if len(parsed) > 8:
+        conn.close()
+        flash('Too many subjects selected. The JHS automatic schedule supports up to 8 subjects.', 'danger')
+        return redirect(url_for('schedule', sec_id=sec_id))
+
+    subject_ids = [item['subject_id'] for item in parsed]
+    rows = conn.execute(
+        f"SELECT id, subject_name, subject_code FROM subjects WHERE id IN ({','.join('?' for _ in subject_ids)})",
+        subject_ids
+    ).fetchall()
+    if len(rows) != len(subject_ids):
+        conn.close()
+        flash('One or more selected subjects are not valid.', 'danger')
+        return redirect(url_for('schedule', sec_id=sec_id))
+    subject_map = {r['id']: dict(r) for r in rows}
+
+    def is_esp(subject):
+        return 'ESP' in subject['subject_code'].upper() or 'ESP' in subject['subject_name'].upper()
+
+    homeroom = next((item for item in parsed if item['is_homeroom']), None)
+    esp = next((item for item in parsed if is_esp(subject_map[item['subject_id']]) and (not homeroom or item['subject_id'] != homeroom['subject_id'])), None)
+    others = [item for item in parsed if item != homeroom and item != esp]
+
+    # Define priority subjects that must be scheduled
+    priority_items = set()
+    if homeroom:
+        priority_items.add(homeroom)
+    if esp:
+        priority_items.add(esp)
+    # Assuming "first subject" refers to homeroom as it's scheduled in the first period
+
+    # Validate teacher workload - ensure no teacher teaches more than MAX_SECTIONS_PER_TEACHER sections
+    for teacher_id, sections in teacher_workload.items():
+        # Get existing sections this teacher teaches (any semester)
+        existing_sections = conn.execute("""
+            SELECT DISTINCT sc.section_id FROM schedules sc
+            WHERE sc.teacher_id = ?
+        """, (teacher_id,)).fetchall()
+        existing_section_ids = {str(r['section_id']) for r in existing_sections}
+        
+        # Check if adding would exceed limit
+        total_sections = len(existing_section_ids.union(sections))
+        if total_sections > MAX_SECTIONS_PER_TEACHER:
+            teacher = conn.execute("SELECT first_name || ' ' || last_name AS name FROM teachers WHERE id=?", (teacher_id,)).fetchone()
+            conn.close()
+            teacher_name = teacher['name'] if teacher else f"Teacher #{teacher_id}"
+            flash(f'{teacher_name} would exceed maximum {MAX_SECTIONS_PER_TEACHER} sections. Currently has {len(existing_section_ids)}, would have {total_sections}.', 'danger')
+            return redirect(url_for('schedule', sec_id=sec_id))
+
+    homeroom_count = sum(1 for item in parsed if item['is_homeroom'])
+    if homeroom_count > 1:
+        conn.close()
+        flash('Please select only one homeroom subject.', 'danger')
+        return redirect(url_for('schedule', sec_id=sec_id))
+
+    total_slots = 8
+    if len(parsed) > total_slots:
+        conn.close()
+        flash('The automatic JHS schedule can only place up to 8 subjects.', 'danger')
+        return redirect(url_for('schedule', sec_id=sec_id))
+
+    period_times = [
+        ('1st Period', '07:30', '08:30'),
+        ('2nd Period', '08:30', '09:30'),
+        ('3rd Period', '10:00', '11:00'),
+        ('4th Period', '11:00', '12:00'),
+        ('5th Period', '13:00', '14:00'),
+        ('6th Period', '14:00', '15:00'),
+        ('7th Period', '15:00', '16:00'),
+        ('Last Period', '16:00', '17:00'),
+    ]
+
+    slots = period_times.copy()
+    assignments = []
+    if homeroom:
+        assignments.append((homeroom, slots[0]))
+        slots = slots[1:]
+
+    last_slot = None
+    if esp:
+        last_slot = slots[-1]
+        slots = slots[:-1]
+
+    if len(others) > len(slots):
+        conn.close()
+        flash('There are more subjects than available JHS periods. Reduce the list or remove non-JHS subjects.', 'danger')
+        return redirect(url_for('schedule', sec_id=sec_id))
+
+    # Randomize the 'others' list to distribute subjects randomly across available periods
+    others_ordered = others.copy()
+    random.shuffle(others_ordered)
+    
+    for idx, item in enumerate(others_ordered):
+        assignments.append((item, slots[idx]))
+
+    if esp:
+        assignments.append((esp, last_slot))
+
+    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+    
+    scheduled_subject_ids = set()
+    
+    # Get existing schedules for this section to preserve locked subjects
+    existing_schedules = conn.execute(
+        "SELECT id, subject_id, teacher_id, day, time_start, time_end, room, semester FROM schedules WHERE section_id=?",
+        (sec_id,)
+    ).fetchall()
+    existing_schedule_map = {}
+    for sch in existing_schedules:
+        key = (sch['subject_id'], sch['day'])
+        existing_schedule_map[key] = sch
+    
+    # Get all locked subjects (those with assignments for this section)
+    locked_subject_assignments = conn.execute(
+        "SELECT DISTINCT subject_id FROM assignments WHERE section_id=?",
+        (sec_id,)
+    ).fetchall()
+    locked_subject_ids = {row['subject_id'] for row in locked_subject_assignments}
+    
+    # For locked subjects, get their current teacher assignment
+    locked_subject_teachers = {}
+    for subject_id in locked_subject_ids:
+        teacher_row = conn.execute(
+            "SELECT teacher_id FROM assignments WHERE subject_id=? AND section_id=?",
+            (subject_id, sec_id)
+        ).fetchone()
+        if teacher_row:
+            locked_subject_teachers[subject_id] = teacher_row['teacher_id']
+    
+    # Identify which parsed items represent locked subjects
+    parsed_locked_subject_ids = {item['subject_id'] for item in parsed if item['subject_id'] in locked_subject_ids}
+    # Identify which parsed items are new (unlocked) subjects
+    parsed_unlocked_subject_ids = {item['subject_id'] for item in parsed if item['subject_id'] not in locked_subject_ids}
+    
+    # Get all subject IDs being rescheduled (from assignments)
+    subjects_to_reschedule = {item['subject_id'] for item, slot in assignments}
+    
+    # DELETE ONLY schedules for subjects being rescheduled (not locked subjects not in this batch)
+    for subject_id in subjects_to_reschedule:
+        conn.execute('DELETE FROM schedules WHERE section_id=? AND subject_id=?', (sec_id, subject_id))
+
+    inserted = 0
+    failed_subjects = []
+    for day in days:
+        day_used_slots = set()
+        for item, slot in assignments:
+            subject_id = item['subject_id']
+            is_homeroom = item.get('is_homeroom', False)
+            teacher_id = item['teacher_id']
+
+            selected_slot = None
+            use_time_start = None
+            use_time_end = None
+
+            # If this is a parsed locked subject with an existing schedule, preserve that exact time
+            existing_key = (subject_id, day)
+            if subject_id in parsed_locked_subject_ids and existing_key in existing_schedule_map:
+                existing = existing_schedule_map[existing_key]
+                use_time_start, use_time_end = (period_times[0][1], period_times[0][2]) if is_homeroom else (existing['time_start'], existing['time_end'])
+                selected_slot = (None, use_time_start, use_time_end)
+                day_used_slots.add(use_time_start)
+            else:
+                # Try ALL available slots for this subject, starting with preferred ones
+                all_slots = period_times.copy()
+                selected_slot = None
+                use_time_start = None
+                use_time_end = None
+
+                # Priority order: homeroom -> ESP -> preferred slot -> all others
+                if is_homeroom:
+                    slot_priority = [period_times[0]]
+                elif esp and item == esp:
+                    slot_priority = [last_slot] if last_slot else []
+                else:
+                    slot_priority = [slot] + [s for s in all_slots if s != slot and s not in [period_times[0], last_slot]]
+
+                for candidate in slot_priority:
+                    if candidate[1] in day_used_slots:
+                        continue
+
+                    time_start, time_end = candidate[1], candidate[2]
+                    conflicts = find_conflicts(conn, sec_id, teacher_id, day, time_start, time_end,
+                                               room='', exclude_id=None, subject_id=subject_id, semester=None)
+                    teacher_conflicts = [c for c in conflicts if c['type'] == 'teacher']
+                    section_conflicts = [c for c in conflicts if c['type'] == 'section']
+
+                    if teacher_conflicts or section_conflicts:
+                        continue
+
+                    selected_slot = candidate
+                    use_time_start, use_time_end = time_start, time_end
+                    break
+
+            if selected_slot is None:
+                if item in priority_items:
+                    failed_subjects.append((item, day))
+                # For non-priority subjects, skip silently if no slot available
+                continue
+
+            day_used_slots.add(use_time_start)
+
+            existing_record = conn.execute(
+                """SELECT id FROM schedules 
+                   WHERE section_id=? AND subject_id=? AND teacher_id=? AND day=? 
+                   AND time_start=? AND time_end=?""",
+                (sec_id, subject_id, teacher_id, day, use_time_start, use_time_end)
+            ).fetchone()
+
+            if not existing_record:
+                conn.execute(
+                    "INSERT INTO schedules (section_id, subject_id, teacher_id, strand_id, day, time_start, time_end, room, semester) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (sec_id, subject_id, teacher_id, section['strand_id'], day, use_time_start, use_time_end, '', 'Whole Year')
+                )
+                inserted += 1
+                scheduled_subject_ids.add(subject_id)
+    
+    # Second pass: try to schedule failed subjects in any available slot, even if it means allowing some conflicts
+    if failed_subjects:
+        for item, day in failed_subjects:
+            subject_id = item['subject_id']
+            is_homeroom = item.get('is_homeroom', False)
+            teacher_id = item['teacher_id']
+
+            # For homeroom, MUST force 1st period
+            if is_homeroom:
+                slots_to_try = [period_times[0]]  # Only 1st period for homeroom
+            else:
+                slots_to_try = period_times.copy()  # Try all slots for non-homeroom
+
+            # Try slots in priority order
+            for candidate in slots_to_try:
+                time_start, time_end = candidate[1], candidate[2]
+
+                # Check if this slot is already used by this section today
+                slot_used_by_section = conn.execute(
+                    "SELECT id FROM schedules WHERE section_id=? AND day=? AND time_start=?",
+                    (sec_id, day, time_start)
+                ).fetchone()
+
+                if slot_used_by_section:
+                    continue  # Section already has something at this time
+
+                # Check for teacher conflicts only (allow section conflicts since we're desperate)
+                conflicts = find_conflicts(conn, sec_id, teacher_id, day, time_start, time_end,
+                                           room='', exclude_id=None, subject_id=subject_id, semester=None)
+                teacher_conflicts = [c for c in conflicts if c['type'] == 'teacher']
+
+                if teacher_conflicts:
+                    continue  # Teacher is busy, can't schedule here
+
+                # Found a slot! Schedule it even if there might be other conflicts
+                existing_record = conn.execute(
+                    """SELECT id FROM schedules
+                       WHERE section_id=? AND subject_id=? AND teacher_id=? AND day=?
+                       AND time_start=? AND time_end=?""",
+                    (sec_id, subject_id, teacher_id, day, time_start, time_end)
+                ).fetchone()
+
+                if not existing_record:
+                    conn.execute(
+                        "INSERT INTO schedules (section_id, subject_id, teacher_id, strand_id, day, time_start, time_end, room, semester) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (sec_id, subject_id, teacher_id, section['strand_id'], day, time_start, time_end, '', 'Whole Year')
+                    )
+                    inserted += 1
+                    scheduled_subject_ids.add(subject_id)
+                    break  # Successfully scheduled, move to next failed subject
+    
+    # RE-INSERT locked subjects that were NOT selected for rescheduling
+    # These subjects keep their existing schedules intact
+    for subject_id in locked_subject_ids:
+        if subject_id not in subjects_to_reschedule:
+            # This locked subject was not in the form submission, so preserve it completely
+            teacher_id = locked_subject_teachers.get(subject_id)
+            if teacher_id:
+                for day in days:
+                    existing_key = (subject_id, day)
+                    if existing_key in existing_schedule_map:
+                        existing = existing_schedule_map[existing_key]
+                        conn.execute(
+                            "INSERT INTO schedules (section_id, subject_id, teacher_id, strand_id, day, time_start, time_end, room, semester) VALUES (?,?,?,?,?,?,?,?,?)",
+                            (sec_id, subject_id, teacher_id, section['strand_id'], day, 
+                             existing['time_start'], existing['time_end'], existing['room'], existing['semester'])
+                        )
+                        inserted += 1
+
+    conn.commit()
+    conn.close()
+    
+    # Report results
+    total_subjects = len(parsed)
+    scheduled_count = len(scheduled_subject_ids)
+    failed_count = len(failed_subjects) if 'failed_subjects' in locals() else 0
+    
+    if failed_count > 0:
+        flash(f'Automatic JHS schedule created with {inserted} entries. {scheduled_count} subjects scheduled, but {failed_count} priority subjects could not be scheduled due to conflicts.', 'warning')
+    else:
+        flash(f'Automatic JHS schedule created with {inserted} entries across Monday to Friday. {scheduled_count} out of {total_subjects} subjects successfully scheduled.', 'success')
+    
+    return redirect(url_for('schedule', sec_id=sec_id))
 
 
 @app.route('/schedule/<int:sec_id>/add', methods=['POST'])
@@ -1441,7 +2034,6 @@ def add_schedule(sec_id):
     room       = d.get('room', '').strip()
     force      = d.get('force_save') == '1'
 
-    # BUG 1 FIX: read ALL selected days, not just the first
     days = request.form.getlist('day')
     if not days:
         flash('Please select at least one day.', 'danger')
@@ -1453,17 +2045,28 @@ def add_schedule(sec_id):
 
     conn = get_db()
 
-    # Resolve subject semester
-    subject_id       = d.get('subject_id')
-    semester_override = d.get('semester_override', '').strip()  # from WY picker
-    sub_row          = conn.execute("SELECT semester FROM subjects WHERE id=?", (subject_id,)).fetchone() if subject_id else None
-    raw_sem          = (sub_row['semester'] or '') if sub_row else ''
+    # Resolve subject + grade level
+    subject_id = d.get('subject_id')
+    sub_row    = conn.execute(
+        "SELECT semester, grade_level FROM subjects WHERE id=?", (subject_id,)
+    ).fetchone() if subject_id else None
 
-    if raw_sem == 'Whole Year':
+    raw_sem    = (sub_row['semester'] or '') if sub_row else ''
+    grade      = (sub_row['grade_level'] or '') if sub_row else ''
+
+    # JHS subjects (Grade 7–10) are always Whole Year — no semester picker needed
+    is_jhs = grade in ('7', '8', '9', '10')
+
+    semester_override = d.get('semester_override', '').strip()
+
+    if is_jhs:
+        # JHS Whole Year: Force Whole Year silently regardless of what was posted
+        semesters_to_save = ['Whole Year']
+    elif raw_sem == 'Whole Year':
+        # Non-JHS Whole Year: User must select a semester
         if semester_override in ('1st Semester', '2nd Semester'):
             semesters_to_save = [semester_override]
         else:
-            # No semester chosen — reject (frontend should have blocked this)
             conn.close()
             flash('Please select a semester (1st or 2nd) for this Whole Year subject.', 'danger')
             return redirect(url_for('schedule', sec_id=sec_id))
@@ -1494,7 +2097,7 @@ def add_schedule(sec_id):
         conn.close()
         return redirect(url_for('schedule', sec_id=sec_id))
 
-    # Insert one row per day × semester — save the resolved semester on the row itself
+    # Insert one row per day × semester
     inserted = 0
     for day in days:
         for sem in semesters_to_save:
@@ -1508,7 +2111,9 @@ def add_schedule(sec_id):
     conn.close()
 
     label = f'{inserted} schedule entr{"ies" if inserted != 1 else "y"}'
-    if raw_sem == 'Whole Year':
+    if is_jhs:
+        label += ' (JHS Whole Year)'
+    elif raw_sem == 'Whole Year':
         label += f' ({semesters_to_save[0]})'
     if force and all_conflicts:
         flash(f'{label} saved with known conflicts.', 'warning')
@@ -2275,12 +2880,15 @@ def get_section_subjects(conn, section_id, active_sem=None):
                sc.semester AS sched_semester,
                t.first_name || ' ' || t.last_name AS teacher_name,
                t.id AS teacher_id
-        FROM schedules sc
+        FROM (
+            SELECT section_id, subject_id, teacher_id, semester FROM schedules WHERE section_id = ?
+            UNION ALL
+            SELECT section_id, subject_id, teacher_id, '' AS semester FROM assignments WHERE section_id = ?
+        ) sc
         JOIN subjects sub ON sc.subject_id = sub.id
         JOIN teachers t   ON sc.teacher_id = t.id
-        WHERE sc.section_id = ?
         ORDER BY sub.subject_name, sc.semester, t.last_name
-    """, (section_id,)).fetchall()
+    """, (section_id, section_id)).fetchall()
 
     from collections import OrderedDict
     subjects = OrderedDict()
@@ -2296,12 +2904,11 @@ def get_section_subjects(conn, section_id, active_sem=None):
                 '_seen_teachers': set(),
             }
         sub = subjects[sid]
-        # For Whole Year subjects: only include teacher if their schedule
-        # matches the active semester (or if no active_sem filter set)
+        # For Whole Year subjects: include all assigned teachers
         is_wy = (sub['semester'] == 'Whole Year')
         sched_sem = r['sched_semester'] or ''
-        if is_wy and active_sem and sched_sem and sched_sem != active_sem:
-            continue  # skip this teacher — wrong semester
+        # Removed filtering by active_sem for Whole Year subjects to show all teachers in summaries
+
         if r['teacher_id'] not in sub['_seen_teachers']:
             sub['_seen_teachers'].add(r['teacher_id'])
             sub['teachers'].append(r['teacher_name'])
@@ -2317,7 +2924,7 @@ def get_section_subjects(conn, section_id, active_sem=None):
 @login_required
 def open_next_period():
     period = request.form.get('period')
-    if period not in ALL_PERIODS:
+    if period not in ALL_TERMS:
         flash('Invalid period.', 'danger')
         return redirect(url_for('grades_home'))
 
@@ -2325,12 +2932,12 @@ def open_next_period():
     settings = get_period_settings(conn)
 
     sem = request.form.get('semester', '1st Semester')
-    if sem not in SEM_PERIODS:
+    if sem not in SEM_TERMS and sem != 'Whole Year':
         flash('Invalid semester.', 'danger')
         return redirect(url_for('grades_home'))
 
     # Enforce sequential unlock within this semester
-    sem_periods = ALL_PERIODS
+    sem_periods = SEM_TERMS.get(sem, ALL_TERMS)
     idx_in_sem  = sem_periods.index(period) if period in sem_periods else 0
     if idx_in_sem > 0:
         prev = sem_periods[idx_in_sem - 1]
@@ -2349,7 +2956,7 @@ def open_next_period():
     )
     conn.commit()
     conn.close()
-    flash(f'{period} grading period is now open for all teachers.', 'success')
+    flash(f'{period} grading period is now open for {sem}.', 'success')
     return redirect(url_for('grades_home'))
 
 @app.route('/grades')
@@ -2389,17 +2996,17 @@ def grades_home():
         sem_period_settings.setdefault(sem, {})[period] = ps
     return render_template('grades_home.html', sections=sections, pending_count=total_pending,
                            sem_period_settings=sem_period_settings,
-                           open_periods=open_periods, all_periods=ALL_PERIODS)
+                           open_periods=open_periods, all_periods=ALL_TERMS)
 
 # ── Grade sheet: section × subject ──
-ALL_PERIODS  = ['Prelim', 'Midterm', 'Semi-Final', 'Final']
-PERIOD_SHORT = {'Prelim':'Pre','Midterm':'Mid','Semi-Final':'S-F','Final':'Fin'}
-PERIOD_ORDER = {p: i for i, p in enumerate(ALL_PERIODS)}
+ALL_TERMS    = ['1st Term', '2nd Term', '3rd Term']
+TERM_ORDER   = {t: i for i, t in enumerate(ALL_TERMS)}
 
-# Semester → periods mapping — each semester has all 4 periods independently
-SEM_PERIODS = {
-    '1st Semester': ['Prelim', 'Midterm', 'Semi-Final', 'Final'],
-    '2nd Semester': ['Prelim', 'Midterm', 'Semi-Final', 'Final'],
+# Semesters only apply to SHS (grades 11-12)
+# JHS (grades 7-10) uses only Terms, no semesters
+SEM_TERMS = {
+    '1st Semester': ['1st Term', '2nd Term'],
+    '2nd Semester': ['3rd Term'],
 }
 
 def get_open_periods(conn):
@@ -2408,14 +3015,14 @@ def get_open_periods(conn):
         "SELECT period FROM grading_period_settings WHERE is_open=1"
     ).fetchall()
     open_set = {r['period'] for r in rows}
-    return [p for p in ALL_PERIODS if p in open_set]
+    return [p for p in ALL_TERMS if p in open_set]
 
 def get_open_periods_for_subject(conn, subject_semester, active_sem=None):
     """Return open periods for a subject based on its semester.
-    Each semester has independent period controls.
+    Each semester has independent term controls.
     Whole Year subjects follow whichever semester tab is active.
     """
-    if not subject_semester or subject_semester not in SEM_PERIODS:
+    if not subject_semester or subject_semester not in SEM_TERMS:
         # Whole Year or unset: use active semester's controls, default to 1st
         lookup_sem = active_sem or '1st Semester'
     else:
@@ -2425,7 +3032,7 @@ def get_open_periods_for_subject(conn, subject_semester, active_sem=None):
         (lookup_sem,)
     ).fetchall()
     open_set = {r['period'] for r in rows}
-    return [p for p in ALL_PERIODS if p in open_set]
+    return [p for p in ALL_TERMS if p in open_set]
 
 def get_period_settings(conn):
     """Return dict of (period, semester) -> settings, plus nested by semester."""
@@ -2455,9 +3062,14 @@ def grade_sheet(sec_id):
         (sec_id,)
     ).fetchall()
 
-    active_sem = request.args.get('sem', '1st Semester')
-    if active_sem not in ('1st Semester', '2nd Semester'):
-        active_sem = '1st Semester'
+    # For JHS sections (grades 7-10), always use 'Whole Year'
+    is_jhs = section['grade_level'] in ('7', '8', '9', '10')
+    if is_jhs:
+        active_sem = 'Whole Year'
+    else:
+        active_sem = request.args.get('sem', '1st Semester')
+        if active_sem not in ('1st Semester', '2nd Semester', 'Whole Year'):
+            active_sem = '1st Semester'
     subjects_all = get_section_subjects(conn, sec_id, active_sem)
     subjects = subjects_for_sem_tab(subjects_all, active_sem)
 
@@ -2473,9 +3085,9 @@ def grade_sheet(sec_id):
             "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id",
             (sub_sem,)
         ).fetchall()
-        QUARTERS = [r['period'] for r in sem_q_rows] if sem_q_rows else ALL_PERIODS
+        QUARTERS = [r['period'] for r in sem_q_rows] if sem_q_rows else ALL_TERMS
     else:
-        QUARTERS = ALL_PERIODS
+        QUARTERS = ALL_TERMS
     grades_raw = conn.execute(
         "SELECT g.student_id, g.quarter, g.written_works, g.performance_tasks, g.quarterly_assessment FROM grades g WHERE g.section_id=? AND g.subject_id=? AND g.semester=?",
         (sec_id, sel_sub_id or 0,
@@ -2617,10 +3229,10 @@ def grade_summary(sec_id):
             # Determine effective semester for this subject's grades
             if sub['semester'] in ('1st Semester', '2nd Semester'):
                 eff_sem     = sub['semester']
-                relevant_qs = sem_quarters_map.get(eff_sem, ALL_PERIODS)
+                relevant_qs = sem_quarters_map.get(eff_sem, ALL_TERMS)
             else:
                 eff_sem     = active_sem
-                relevant_qs = sem_quarters_map.get(active_sem, ALL_PERIODS)
+                relevant_qs = sem_quarters_map.get(active_sem, ALL_TERMS)
             grade_key = (sub['id'], eff_sem)
             q_vals = [
                 grade_map.get(st['id'], {}).get(grade_key, {}).get(q)
@@ -2655,8 +3267,8 @@ def clear_grades(sec_id):
     period = request.form.get('period', '').strip()
     if not sub_id:
         return jsonify({'ok': False, 'error': 'No subject specified.'}), 400
-    if period not in ALL_PERIODS:
-        return jsonify({'ok': False, 'error': 'Invalid period.'}), 400
+    if period not in ALL_TERMS:
+        return jsonify({'ok': False, 'error': 'Invalid term.'}), 400
 
     conn = get_db()
     # Only clear Draft periods — cannot clear Approved/Locked
@@ -2690,7 +3302,7 @@ def save_grades(sec_id):
     d          = request.form
     subject_id = int(d['subject_id'])
     conn       = get_db()
-    QUARTERS   = ['Prelim','Midterm','Semi-Final','Final']
+    QUARTERS   = ['1st Term','2nd Term','3rd Term']
 
     def fval(v):
         try: return float(v) if v.strip() != '' else None
@@ -2714,9 +3326,9 @@ def save_grades(sec_id):
             conn.execute(f"UPDATE grades SET {component}=?, updated_at=datetime('now') WHERE student_id=? AND subject_id=? AND section_id=? AND quarter=?",
                          (v, sid, subject_id, sec_id, quarter))
         else:
-            conn.execute("""INSERT INTO grades (student_id,subject_id,section_id,quarter,written_works,performance_tasks,quarterly_assessment,midterm,finals)
-                            VALUES (?,?,?,?,?,?,?,?,?)""",
-                         (sid, subject_id, sec_id, quarter, None, None, None, None, None))
+            conn.execute("""INSERT INTO grades (student_id,subject_id,section_id,quarter,written_works,performance_tasks,quarterly_assessment)
+                            VALUES (?,?,?,?,?,?,?)""",
+                         (sid, subject_id, sec_id, quarter, None, None, None))
             conn.execute(f"UPDATE grades SET {component}=?, updated_at=datetime('now') WHERE student_id=? AND subject_id=? AND section_id=? AND quarter=?",
                          (v, sid, subject_id, sec_id, quarter))
 
@@ -2740,7 +3352,7 @@ def save_grade_cell():
     value      = d.get('value')
     reason     = (d.get('reason') or '').strip()
 
-    ALLOWED = {'written_works','performance_tasks','quarterly_assessment','midterm','finals'}
+    ALLOWED = {'written_works','performance_tasks','quarterly_assessment'}
     if component not in ALLOWED:
         return jsonify({'ok': False, 'error': 'Invalid component'}), 400
 
@@ -2800,10 +3412,9 @@ def save_grade_cell():
         kw = {c: None for c in ALLOWED}
         kw[component] = value
         conn.execute(
-            "INSERT INTO grades (student_id,subject_id,section_id,semester,quarter,written_works,performance_tasks,quarterly_assessment,midterm,finals) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO grades (student_id,subject_id,section_id,semester,quarter,written_works,performance_tasks,quarterly_assessment) VALUES (?,?,?,?,?,?,?,?)",
             (student_id, subject_id, section_id, semester, quarter,
-             kw['written_works'], kw['performance_tasks'], kw['quarterly_assessment'],
-             kw['midterm'], kw['finals'])
+             kw['written_works'], kw['performance_tasks'], kw['quarterly_assessment'])
         )
 
     row = conn.execute(
@@ -2835,7 +3446,7 @@ def student_profile(student_id):
         return redirect(url_for('students'))
 
     subjects  = get_section_subjects(conn, student['sec_id']) if student['sec_id'] else []
-    QUARTERS  = ['Prelim','Midterm','Semi-Final','Final']
+    QUARTERS  = ['1st Term','2nd Term','3rd Term']
 
     # Submission statuses per subject+quarter
     sub_statuses = {}
@@ -2856,7 +3467,7 @@ def student_profile(student_id):
     for g in grades_raw:
         grade_map.setdefault(g['subject_id'], {}).setdefault(g['semester'] or '', {})[g['quarter']] = g
 
-    QUARTERS = ['Prelim', 'Midterm', 'Semi-Final', 'Final']
+    QUARTERS = ['1st Term', '2nd Term', '3rd Term']
     subject_rows = []
     sem1_avgs = []
     sem2_avgs = []
@@ -2990,9 +3601,9 @@ def report_card(student_id):
         return redirect(url_for('grades_home'))
 
     sec_id   = student['section_id']
-    QUARTERS = ALL_PERIODS
+    QUARTERS = ALL_TERMS
 
-    # Get quarters per semester from settings
+    # Get terms per semester from settings
     sem_q_map = {}
     for sem in ('1st Semester', '2nd Semester'):
         rows = conn.execute(
@@ -3094,7 +3705,7 @@ def honor_roll():
         "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id",
         (active_sem,)
     ).fetchall()
-    sem_quarters = [r['period'] for r in sem_q_rows] if sem_q_rows else ALL_PERIODS
+    sem_quarters = [r['period'] for r in sem_q_rows] if sem_q_rows else ALL_TERMS
 
     honorees = []
     if sec_id:
@@ -3194,7 +3805,7 @@ def grade_teacher_summary():
             ORDER BY sec.grade_level, sec.section_name, sub.subject_name
         """, (tid,)).fetchall()
 
-        QUARTERS = ['Prelim','Midterm','Semi-Final','Final']
+        QUARTERS = ['1st Term','2nd Term','3rd Term']
         for row in assigned:
             grades_raw = conn.execute("""
                 SELECT g.student_id, g.quarter,
@@ -3378,7 +3989,7 @@ def teacher_dashboard():
     """, (tid,)).fetchall()
 
     # Submission statuses — scoped to each subject's effective semester
-    QUARTERS = ['Prelim','Midterm','Semi-Final','Final']
+    QUARTERS = ['1st Term','2nd Term','3rd Term']
     status_map = {}
     for row in assigned:
         sub_sem = (row['sem'] or '').strip()
@@ -3433,7 +4044,7 @@ def teacher_grade_sheet(sec_id, sub_id):
         (sec_id,)
     ).fetchall()
 
-    QUARTERS = ['Prelim','Midterm','Semi-Final','Final']
+    QUARTERS = ['1st Term','2nd Term','3rd Term']
 
     # Load submission statuses per quarter — semester determined after eff_sem computed below
     _tgs_sub_sem_raw = conn.execute("SELECT semester FROM subjects WHERE id=?", (sub_id,)).fetchone()
@@ -3472,13 +4083,12 @@ def teacher_grade_sheet(sec_id, sub_id):
         "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id",
         (eff_sem,)
     ).fetchall()
-    QUARTERS = [r['period'] for r in sem_q_rows] if sem_q_rows else ['Prelim','Midterm','Semi-Final','Final']
+    QUARTERS = [r['period'] for r in sem_q_rows] if sem_q_rows else ['1st Term','2nd Term','3rd Term']
 
     # Load grades scoped to this semester
     grades_raw = conn.execute("""
         SELECT g.student_id, g.quarter,
-               g.written_works, g.performance_tasks, g.quarterly_assessment,
-               g.midterm, g.finals
+               g.written_works, g.performance_tasks, g.quarterly_assessment
         FROM grades g WHERE g.subject_id=? AND g.section_id=? AND g.semester=?
     """, (sub_id, sec_id, eff_sem)).fetchall()
     grade_map = {}
@@ -3493,10 +4103,9 @@ def teacher_grade_sheet(sec_id, sub_id):
             if row:
                 qg = compute_quarterly_grade(row['written_works'], row['performance_tasks'], row['quarterly_assessment'])
                 qgrades[q] = {'ww': row['written_works'], 'pt': row['performance_tasks'],
-                               'qa': row['quarterly_assessment'], 'midterm': row['midterm'],
-                               'finals': row['finals'], 'computed': qg}
+                               'qa': row['quarterly_assessment'], 'computed': qg}
             else:
-                qgrades[q] = {'ww': None, 'pt': None, 'qa': None, 'midterm': None, 'finals': None, 'computed': None}
+                qgrades[q] = {'ww': None, 'pt': None, 'qa': None, 'computed': None}
         vals = [qgrades[q]['computed'] for q in QUARTERS if qgrades[q]['computed'] is not None]
         avg  = round(sum(vals)/len(vals), 2) if vals else None
         student_grades.append({'student': st, 'quarters': qgrades, 'average': avg,
@@ -3536,11 +4145,11 @@ def teacher_export_grades(sec_id, sub_id):
         (sec_id,)
     ).fetchall()
 
-    ALL_PERIODS = ['Prelim', 'Midterm', 'Semi-Final', 'Final']
+    ALL_TERMS = ['1st Term', '2nd Term', '3rd Term']
     sel_period  = request.args.get('period', 'all')
-    PERIODS     = ALL_PERIODS if sel_period == 'all' else [p for p in ALL_PERIODS if p == sel_period]
+    PERIODS     = ALL_TERMS if sel_period == 'all' else [p for p in ALL_TERMS if p == sel_period]
     if not PERIODS:
-        PERIODS = ALL_PERIODS
+        PERIODS = ALL_TERMS
 
     fallback_exp = request.args.get('semester') or '1st Semester'
     eff_sem_exp  = get_effective_semester(conn, sub_id, sec_id, fallback_exp)
@@ -3597,11 +4206,11 @@ def admin_export_grades(sec_id):
         (sec_id,)
     ).fetchall()
 
-    ALL_PERIODS = ['Prelim', 'Midterm', 'Semi-Final', 'Final']
+    ALL_TERMS = ['1st Term', '2nd Term', '3rd Term']
     sel_period  = request.args.get('period', 'all')
-    PERIODS     = ALL_PERIODS if sel_period == 'all' else [p for p in ALL_PERIODS if p == sel_period]
+    PERIODS     = ALL_TERMS if sel_period == 'all' else [p for p in ALL_TERMS if p == sel_period]
     if not PERIODS:
-        PERIODS = ALL_PERIODS
+        PERIODS = ALL_TERMS
 
     fallback_exp = request.args.get('semester') or '1st Semester'
     grades_raw = conn.execute(
@@ -3955,7 +4564,7 @@ def student_dashboard():
     """, (sid,)).fetchone()
 
     subjects  = get_section_subjects(conn, student['sec_id']) if student['sec_id'] else []
-    QUARTERS  = ['Prelim','Midterm','Semi-Final','Final']
+    QUARTERS  = ['1st Term','2nd Term','3rd Term']
 
     # Submission statuses
     sub_statuses = {}
@@ -4004,7 +4613,7 @@ def student_dashboard():
 
     general_avg = round(sum(all_approved)/len(all_approved), 2) if all_approved else None
     honor       = honor_classification(general_avg)
-    QUARTERS    = ['Prelim', 'Midterm', 'Semi-Final', 'Final']
+    QUARTERS    = ['1st Term', '2nd Term', '3rd Term']
 
     # Schedule
     schedule = conn.execute("""

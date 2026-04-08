@@ -17,11 +17,10 @@
     <input type="hidden" name="subject_id" value="{{ sel_sub_id }}">
     <input type="hidden" name="semester" value="{{ active_sem if (not sel_subject or sel_subject.semester in ('','Whole Year')) else sel_subject.semester }}">
     <select name="period" class="form-control" style="width:140px;padding:6px 10px;font-size:13px;">
-      <option value="all">All Periods</option>
-      <option value="Prelim">Prelim</option>
-      <option value="Midterm">Midterm</option>
-      <option value="Semi-Final">Semi-Final</option>
-      <option value="Final">Final</option>
+      <option value="all">All Terms</option>
+      <option value="1st Term">1st Term</option>
+      <option value="2nd Term">2nd Term</option>
+      <option value="3rd Term">3rd Term</option>
     </select>
     <button type="submit" class="btn btn-secondary">
       <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
@@ -37,11 +36,10 @@
   {% if sel_sub_id %}
   <div style="display:flex;align-items:center;gap:6px;">
     <select id="clearPeriodSel" class="form-control" style="width:140px;padding:6px 10px;font-size:13px;">
-      <option value="">— Period —</option>
-      <option value="Prelim">Prelim</option>
-      <option value="Midterm">Midterm</option>
-      <option value="Semi-Final">Semi-Final</option>
-      <option value="Final">Final</option>
+      <option value="">— Term —</option>
+      <option value="1st Term">1st Term</option>
+      <option value="2nd Term">2nd Term</option>
+      <option value="3rd Term">3rd Term</option>
     </select>
     <button class="btn btn-danger btn-sm" onclick="clearGrades()" style="white-space:nowrap;">
       <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
@@ -95,8 +93,7 @@
 
 .p-group { border-left:2px solid var(--border); }
 .p-header { background:#f8fafc; font-size:11px; font-weight:800; text-align:center; padding:8px 4px !important; }
-.p-prelim    { color:#2563eb; } .p-midterm   { color:#7c3aed; }
-.p-semifinal { color:#d97706; } .p-final     { color:#16a34a; }
+.p-term1     { color:#2563eb; } .p-term2     { color:#7c3aed; } .p-term3     { color:#16a34a; }
 
 .status-pill { display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:99px;font-size:10px;font-weight:700; }
 .status-Draft     { background:#f1f5f9;color:#64748b;border:1px solid #cbd5e1; }
@@ -130,6 +127,8 @@
 {% block content %}
 
 <!-- Semester tabs -->
+{% set is_jhs = section.grade_level in ('7', '8', '9', '10') %}
+{% if not is_jhs %}
 {% set sem1_count = subjects_all | selectattr('semester','equalto','1st Semester') | list | length %}
 {% set sem2_count = subjects_all | selectattr('semester','equalto','2nd Semester') | list | length %}
 {% set wy_count   = subjects_all | selectattr('semester','equalto','Whole Year') | list | length %}
@@ -149,12 +148,20 @@
       ({{ sem2_count + wy_count + na_count }} subjects)
     </span>
   </a>
+  <a href="{{ url_for('grade_sheet', sec_id=section.id, sem='Whole Year') }}"
+     class="sem-tab {{ 'active' if active_sem == 'Whole Year' else '' }}">
+    Whole Year
+    <span style="font-size:10px;opacity:.75;margin-left:4px;">
+      ({{ wy_count + na_count }} subjects)
+    </span>
+  </a>
   {% if wy_count > 0 %}
   <span style="display:inline-flex;align-items:center;gap:5px;padding:8px 14px;font-size:12px;color:#b45309;border:1.5px solid #fde68a;border-radius:99px;background:#fffbeb;font-weight:600;">
     📅 {{ wy_count }} Whole Year subject{{ 's' if wy_count != 1 else '' }} appear in both tabs
   </span>
   {% endif %}
 </div>
+{% endif %}
 
 <!-- Subject tabs -->
 {% if subjects %}
@@ -204,7 +211,7 @@
       <thead>
         <tr>
           <th class="col-name" rowspan="2" style="min-width:160px;text-align:left;padding-left:16px;">Student</th>
-          {% set period_classes = {'Prelim':'p-prelim','Midterm':'p-midterm','Semi-Final':'p-semifinal','Final':'p-final'} %}
+          {% set period_classes = {'1st Term':'p-term1','2nd Term':'p-term2','3rd Term':'p-term3'} %}
           {% for p in quarters %}
           <th class="p-header {{ period_classes[p] }} p-group" colspan="4">
             <div style="display:flex;align-items:center;justify-content:center;gap:6px;">
@@ -473,7 +480,7 @@ async function showLog(period) {
     const r = await fetch(`${LOG_URL}?subject_id=${SUB_ID}&section_id=${SEC_ID}&quarter=${encodeURIComponent(period)}`);
     const logs = await r.json();
     if (!logs.length) { box.innerHTML='<em style="color:var(--text-muted);font-size:13px;">No edits recorded.</em>'; return; }
-    const CL = {written_works:'Written Works',performance_tasks:'Performance Tasks',quarterly_assessment:'Quarterly Assessment',midterm:'Midterm',finals:'Finals'};
+    const CL = {written_works:'Written Works',performance_tasks:'Performance Tasks',quarterly_assessment:'Quarterly Assessment'};
     box.innerHTML = logs.map(l => `
       <div class="log-entry">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;">

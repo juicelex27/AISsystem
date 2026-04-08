@@ -319,18 +319,6 @@
           </div>
         </div>
 
-        <!-- Semester -->
-        <div class="form-group">
-          <label>Semester</label>
-          <select id="as_semester" name="semester" class="form-control" onchange="scheduleCheck()">
-            <option value="">— Not specified —</option>
-            <option value="1st Semester">1st Semester</option>
-            <option value="2nd Semester">2nd Semester</option>
-            <option value="Whole Year">Whole Year</option>
-          </select>
-          <div id="semesterHint" style="font-size:11px;color:var(--text-muted);margin-top:4px;display:none;"></div>
-        </div>
-
         <!-- Day chips -->
         <div class="form-group">
           <label>Day(s) <span class="required-star">*</span></label>
@@ -410,10 +398,12 @@ const semStats = {{ (sem_stats or {}) | tojson }};
 function setSemester(sem, btn) {
   document.querySelectorAll('.sem-tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
-  const filtered = sem === 'all' ? scheduleData : scheduleData.filter(s => s.semester === sem);
+  const filtered = sem === 'all'
+    ? scheduleData
+    : scheduleData.filter(s => s.semester === sem || s.semester === 'Whole Year');
   renderTimetable(filtered, 'timetableContainer', null, 'section_id');
   document.querySelectorAll('.sched-row').forEach(row => {
-    row.style.display = (sem === 'all' || row.dataset.semester === sem) ? '' : 'none';
+    row.style.display = (sem === 'all' || row.dataset.semester === sem || row.dataset.semester === 'Whole Year') ? '' : 'none';
   });
   document.querySelectorAll('[data-sem-card]').forEach(card => {
     card.style.opacity   = (sem === 'all' || card.dataset.semCard === sem) ? '1' : '0.25';
@@ -431,8 +421,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── SUBJECT LOADING ───────────────────────────────────────────
 let allSubjects = [];
-let subjectSemesterMap = {};  // id -> semester string
-
 async function initSubjects() {
   try {
     const r   = await fetch('/api/all_subjects');
@@ -449,31 +437,14 @@ function populateSubjects(list) {
     const o = document.createElement('option');
     o.value            = s.id;
     o.textContent      = `${s.subject_name} (${s.subject_code})`;
-    o.dataset.semester = s.semester || '';
     if (String(s.id) === prev) o.selected = true;
     sel.appendChild(o);
-    subjectSemesterMap[s.id] = s.semester || '';
   });
   if (!list.length) sel.innerHTML = '<option value="">No subjects available</option>';
 }
 
-// Called when subject changes — auto-fills semester if subject has one set
+// Called when subject changes
 function onSubjectChange() {
-  const sel      = document.getElementById('as_subject_id');
-  const semSel   = document.getElementById('as_semester');
-  const semHint  = document.getElementById('semesterHint');
-  const selected = sel.options[sel.selectedIndex];
-  const subSem   = selected ? (selected.dataset.semester || '') : '';
-
-  if (subSem) {
-    semSel.value          = subSem;
-    semHint.textContent   = `Auto-filled from subject (${subSem}).`;
-    semHint.style.display = '';
-  } else {
-    semSel.value          = '';
-    semHint.textContent   = '';
-    semHint.style.display = 'none';
-  }
   scheduleCheck();
 }
 
@@ -728,9 +699,6 @@ function openAddScheduleModal() {
   populateSubjects(allSubjects);
   document.getElementById('subjectHint').textContent =
     'Select a strand above to filter subjects, or leave blank to see all.';
-  document.getElementById('as_semester').value = '';
-  const sh = document.getElementById('semesterHint');
-  sh.textContent = ''; sh.style.display = 'none';
   openModal('addScheduleModal');
 }
 </script>

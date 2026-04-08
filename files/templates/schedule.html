@@ -14,6 +14,12 @@
     Clear All
   </button>
   {% endif %}
+  {% if show_auto_schedule_button %}
+  <button class="btn btn-warning" onclick="openAutoScheduleModal()" style="color:#000;">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 13h4v-2H5v2zm0 4h7v-2H5v2zm0-8h11V7H5v2zm13 12h-6v2h6v-2zm0-4h-6v2h6v-2zm0-8v2h-6V7h6z"/></svg>
+    Auto Create
+  </button>
+  {% endif %}
   <button class="btn btn-primary" onclick="openAddModal()">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
     Add Entry
@@ -181,10 +187,14 @@
 
         <div class="form-group">
           <label>Teacher <span class="required-star">*</span></label>
-          <select id="sch_teacher_id" name="teacher_id" class="form-control checkable" required>
-            <option value="">Select a teacher</option>
-            {% for t in teachers %}<option value="{{ t.id }}">{{ t.first_name }} {{ t.last_name }}</option>{% endfor %}
-          </select>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <select id="sch_teacher_id" name="teacher_id" class="form-control checkable" required style="flex:1;">
+              <option value="">Select a teacher</option>
+              {% for t in teachers %}<option value="{{ t.id }}">{{ t.first_name }} {{ t.last_name }}</option>{% endfor %}
+            </select>
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="loadSubjectTeachers()" style="white-space:nowrap;">Find teacher</button>
+          </div>
+          <div id="subjectTeacherInfo" style="font-size:12px;color:var(--text-muted);margin-top:6px;">If the chosen subject has an assigned teacher, it will be selected automatically.</div>
           <div id="workloadBar" style="display:none;margin-top:8px;padding:8px 12px;border-radius:8px;font-size:12px;align-items:center;gap:10px;background:#f0f9ff;border:1px solid #bae6fd;">
             <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;flex-shrink:0;color:#0284c7;"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
             <div style="flex:1;">
@@ -232,6 +242,64 @@
           <span id="submitLabel">Add to Schedule</span>
         </button>
       </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal-overlay" id="subjectTeacherModal">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header">
+      <h3>Select Teacher for Subject</h3>
+      <button class="modal-close" onclick="closeModal('subjectTeacherModal')">×</button>
+    </div>
+    <div class="modal-body" style="display:flex;flex-direction:column;gap:16px;">
+      <p style="margin:0;color:var(--text-secondary);">This subject has more than one assigned teacher for this section. Choose the teacher you want to assign to this schedule entry.</p>
+      <div id="subjectTeacherCandidates" style="display:grid;grid-template-columns:1fr;gap:10px;"></div>
+      <button type="button" class="btn btn-secondary" onclick="closeModal('subjectTeacherModal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="autoScheduleModal">
+  <div class="modal" style="max-width:680px;">
+    <div class="modal-header">
+      <h3>JHS Auto Schedule</h3>
+      <button class="modal-close" onclick="closeModal('autoScheduleModal')">×</button>
+    </div>
+    <form id="autoScheduleForm" method="POST" action="{{ url_for('auto_create_schedule', sec_id=section.id) }}" onsubmit="return handleAutoScheduleSubmit(event)">
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:16px;">
+        <p style="margin:0;color:var(--text-secondary);">
+          This will add subjects from this section's strand to available time slots in the schedule.
+          <strong>Homeroom must be in 1st Period</strong> (7:30–8:30). ESP goes to Last Period.
+          <strong>Locked subjects</strong> (with teacher assignments) will keep their existing schedule, except homeroom is always placed in 1st Period.
+          Only unlocked subjects will be newly scheduled in available slots.
+        </p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <span style="font-size:12px;color:#475569;background:#e2e8f0;padding:8px 12px;border-radius:999px;">1st Period: 7:30–8:30</span>
+          <span style="font-size:12px;color:#475569;background:#e2e8f0;padding:8px 12px;border-radius:999px;">2nd Period: 8:30–9:30</span>
+          <span style="font-size:12px;color:#475569;background:#e2e8f0;padding:8px 12px;border-radius:999px;">3rd Period: 10:00–11:00</span>
+          <span style="font-size:12px;color:#475569;background:#e2e8f0;padding:8px 12px;border-radius:999px;">4th Period: 11:00–12:00</span>
+          <span style="font-size:12px;color:#475569;background:#e2e8f0;padding:8px 12px;border-radius:999px;">5th Period: 13:00–14:00</span>
+          <span style="font-size:12px;color:#475569;background:#e2e8f0;padding:8px 12px;border-radius:999px;">6th Period: 14:00–15:00</span>
+          <span style="font-size:12px;color:#475569;background:#e2e8f0;padding:8px 12px;border-radius:999px;">7th Period: 15:00–16:00</span>
+          <span style="font-size:12px;color:#475569;background:#e2e8f0;padding:8px 12px;border-radius:999px;">Last Period: 16:00–17:00</span>
+        </div>
+        <div id="autoScheduleRows" style="display:grid;gap:14px;"></div>
+        <div id="autoScheduleEmpty" style="display:none;color:#b45309;background:#fef3c7;padding:14px;border-radius:10px;border:1px solid #fde68a;line-height:1.6;">
+          <strong>⚠️ No subjects available</strong><br>
+          This section has no teacher-subject assignments yet. To auto-schedule:<br>
+          <ol style="margin:8px 0 0 20px; padding:0;">
+            <li>First add subject assignments to this section</li>
+            <li>Then return to auto-schedule and select homeroom & other subjects</li>
+          </ol>
+        </div>
+        <div id="autoScheduleNotes" style="font-size:12px;color:#475569;">Select one homeroom subject if applicable — it will be placed in 1st Period on all days. ESP subjects will be assigned to Last Period automatically.</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('autoScheduleModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="autoScheduleSubmit">Create Schedule</button>
+      </div>
+      <div id="autoScheduleHidden"></div>
     </form>
   </div>
 </div>
@@ -409,6 +477,10 @@ const SECTION_ID   = {{ section.id }};
 const DELETE_BASE  = "/schedule/delete";
 const API_CONFLICT = "/api/schedule/check_conflict";
 const ALL_SUBJECTS_FALLBACK = {{ all_subjects_json | default([]) | tojson }};
+const AUTO_JHS_SUBJECTS = {{ auto_jhs_subjects | default([]) | tojson }};
+const AUTO_TEACHERS = {{ teachers_json | default([]) | tojson }};
+const GRADE_LEVEL  = {{ section.grade_level|tojson }};
+const IS_JHS       = ['7', '8', '9', '10'].includes(GRADE_LEVEL);
 
 const scheduleData = [
   {% for sch in schedules %}{ id:{{ sch.id }}, subject_id:{{ sch.subject_id }}, subject_name:{{ sch.subject_name|tojson }}, subject_code:{{ sch.subject_code|tojson }}, teacher_id:{{ sch.teacher_id }}, teacher_name:{{ sch.teacher_name|tojson }}, strand_id:{{ sch.strand_id or 'null' }}, strand_code:{{ (sch.strand_code or '')|tojson }}, semester:{{ (sch.semester or sch.subject_semester or '')|tojson }}, day:{{ sch.day|tojson }}, time_start:{{ sch.time_start|tojson }}, time_end:{{ sch.time_end|tojson }}, room:{{ (sch.room or '')|tojson }} },{% endfor %}
@@ -488,11 +560,13 @@ document.getElementById('sch_strand_id').addEventListener('change', async functi
     document.getElementById('subjectHint').textContent = data.length ? `${data.length} subject(s) in this strand.` : 'No subjects assigned to this strand yet.';
   } catch(_) { document.getElementById('sch_subject_id').innerHTML = '<option value="">Error loading subjects</option>'; }
   checkWholeYearNote();
+  loadSubjectTeachers();
   scheduleCheck();
 });
 
 document.getElementById('sch_subject_id').addEventListener('change', function() {
   checkWholeYearNote();
+  loadSubjectTeachers();
 });
 
 function checkWholeYearNote() {
@@ -500,12 +574,64 @@ function checkWholeYearNote() {
   const subData = allSubjects.find(s => s.id === subId);
   const picker  = document.getElementById('wholeYearPicker');
   const isWY    = subData && subData.semester === 'Whole Year';
-  picker.style.display = isWY ? '' : 'none';
-  // Clear semester selection when a different subject is chosen
-  if (!isWY) {
+  
+  // Check if subject is JHS based on its grade_level
+  const isSubjectJHS = subData && ['7', '8', '9', '10'].includes(subData.grade_level);
+  
+  // Hide picker for JHS Whole Year subjects — JHS always uses "Whole Year" automatically
+  const showPicker = isWY && !isSubjectJHS;
+  picker.style.display = showPicker ? '' : 'none';
+  
+  // Clear semester selection when a different subject is chosen or if JHS
+  if (!showPicker) {
     picker.querySelectorAll('input[type="radio"]').forEach(r => r.checked = false);
   }
   scheduleCheck();
+}
+
+async function loadSubjectTeachers() {
+  const subId = parseInt(document.getElementById('sch_subject_id').value);
+  const info = document.getElementById('subjectTeacherInfo');
+  if (!subId) {
+    info.textContent = 'If the chosen subject has an assigned teacher, it will be selected automatically.';
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/subject/${subId}/teachers/${SECTION_ID}`);
+    if (!res.ok) throw new Error('Failed to fetch teacher assignments');
+    const teachers = await res.json();
+    if (!teachers.length) {
+      info.textContent = 'No assigned teacher found for this subject. Please select one manually.';
+      return;
+    }
+    if (teachers.length === 1) {
+      document.getElementById('sch_teacher_id').value = teachers[0].id;
+      info.innerHTML = `Teacher auto-selected: <strong>${teachers[0].first_name} ${teachers[0].last_name}</strong>.`;
+      scheduleCheck();
+      return;
+    }
+    const list = document.getElementById('subjectTeacherCandidates');
+    list.innerHTML = '';
+    teachers.forEach(t => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn-outline-primary';
+      button.style.width = '100%';
+      button.textContent = `${t.first_name} ${t.last_name}`;
+      button.addEventListener('click', () => {
+        document.getElementById('sch_teacher_id').value = t.id;
+        info.innerHTML = `<strong>${t.first_name} ${t.last_name}</strong> selected as teacher.`;
+        closeModal('subjectTeacherModal');
+        scheduleCheck();
+      });
+      list.appendChild(button);
+    });
+    openModal('subjectTeacherModal');
+    info.textContent = `${teachers.length} assigned teachers found. Please choose one.`;
+  } catch (err) {
+    info.textContent = 'Unable to retrieve teacher assignments. Select a teacher manually.';
+  }
 }
 
 document.getElementById('e_strand_id').addEventListener('change', async function() {
@@ -550,7 +676,16 @@ function scheduleCheck() { clearTimeout(checkTimer); checkTimer = setTimeout(run
 function getAddFormValues() {
   const days = Array.from(document.querySelectorAll('.day-check:checked')).map(el => el.value);
   const semOverride = document.querySelector('input[name="semester_override"]:checked');
-  return { section_id:String(SECTION_ID), teacher_id:document.getElementById('sch_teacher_id').value, subject_id:document.getElementById('sch_subject_id').value||null, semester_override:semOverride?semOverride.value:'', day:days[0]||'', days, time_start:document.getElementById('sch_time_start').value, time_end:document.getElementById('sch_time_end').value, room:document.getElementById('sch_room').value.trim() };
+  
+  // For JHS Whole Year subjects, use "Whole Year" as semester_override
+  let semesterValue = semOverride ? semOverride.value : '';
+  const selectedSubject = allSubjects.find(s => s.id === parseInt(document.getElementById('sch_subject_id').value));
+  const isSubjectJHS = selectedSubject && ['7', '8', '9', '10'].includes(selectedSubject.grade_level);
+  if (isSubjectJHS && selectedSubject && selectedSubject.semester === 'Whole Year') {
+    semesterValue = 'Whole Year';
+  }
+  
+  return { section_id:String(SECTION_ID), teacher_id:document.getElementById('sch_teacher_id').value, subject_id:document.getElementById('sch_subject_id').value||null, semester_override:semesterValue, day:days[0]||'', days, time_start:document.getElementById('sch_time_start').value, time_end:document.getElementById('sch_time_end').value, room:document.getElementById('sch_room').value.trim() };
 }
 
 function onDayChange() {
@@ -580,8 +715,10 @@ async function runConflictCheck() {
   lastCheckKey = key;
   if (!vals.teacher_id) { hideAddPanels(); setSubmitState('idle'); updateWorkloadBar(null); return; }
 
-  // If Whole Year subject selected but no semester chosen yet — block
-  if (isWholeYearSubjectSelected() && !getSelectedWYSemester()) {
+  // If non-JHS Whole Year subject selected but no semester chosen yet — block
+  const selectedSubject = allSubjects.find(s => s.id === parseInt(vals.subject_id));
+  const isSubjectJHS = selectedSubject && ['7', '8', '9', '10'].includes(selectedSubject.grade_level);
+  if (isWholeYearSubjectSelected() && !isSubjectJHS && !getSelectedWYSemester()) {
     hideAddPanels(); setSubmitState('wy_pending'); return;
   }
 
@@ -675,6 +812,148 @@ function handleAddSubmit(e) {
   return true;
 }
 
+function openAutoScheduleModal() {
+  const rowsContainer = document.getElementById('autoScheduleRows');
+  const emptyState = document.getElementById('autoScheduleEmpty');
+  rowsContainer.innerHTML = '';
+  if (!AUTO_JHS_SUBJECTS || !AUTO_JHS_SUBJECTS.length) {
+    emptyState.style.display = '';
+    document.getElementById('autoScheduleSubmit').disabled = true;
+    openModal('autoScheduleModal');
+    return;
+  }
+  emptyState.style.display = 'none';
+
+  AUTO_JHS_SUBJECTS.forEach(sub => {
+    const isESP = /ESP/i.test(sub.subject_code || sub.subject_name);
+    const isAssigned = sub.teacher_id && sub.teacher_id !== '';
+    const isScheduled = sub.schedule_id && sub.schedule_id !== '';
+    const isLocked = isAssigned || isScheduled;
+    // ESP subjects cannot be homeroom
+    const canBeHomeroom = !isESP && !isLocked;
+    
+    const teacherOptions = AUTO_TEACHERS.map(t => `
+      <option value="${t.id}"${String(t.id) === String(sub.teacher_id) ? ' selected' : ''}>
+        ${t.first_name} ${t.last_name}
+      </option>
+    `).join('');
+
+    const lockIndicator = isLocked ? '<span style="color:#dc2626;font-size:12px;margin-left:8px;">🔒 Locked</span>' : '';
+    const scheduleInfo = isScheduled ? `<span style="font-size:11px;color:#6b7280;margin-left:8px;">Scheduled: ${sub.scheduled_day} ${sub.scheduled_time_start}</span>` : '';
+
+    rowsContainer.insertAdjacentHTML('beforeend', `
+      <div class="auto-subject-row ${isLocked ? 'locked' : ''}" data-subject-id="${sub.subject_id}" data-teacher-id="${sub.teacher_id}" style="border:1px solid var(--border);border-radius:12px;padding:14px;display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:center;${isLocked ? 'background:#f8fafc;' : ''}">
+        <div>
+          <div style="font-weight:700;">${sub.subject_name} <span style="color:#6b7280;font-size:12px;">(${sub.subject_code})</span>${lockIndicator}${scheduleInfo}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;align-items:center;">
+            ${canBeHomeroom ? `<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+              <input type="radio" name="homeroom_subject" value="${sub.subject_id}" style="accent-color:#2563eb;"> Homeroom
+            </label>` : ''}
+            ${isESP ? `<span style="font-size:12px;color:#0f766e;background:#d1fae5;padding:5px 10px;border-radius:999px;">ESP → Last Period</span>` : ''}
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <label style="font-size:13px;font-weight:600;color:#0f172a;">Teacher ${isLocked ? '<span style="color:#dc2626;">(Locked)</span>' : ''}</label>
+          <div style="position:relative;">
+            <input type="text" class="form-control auto-teacher-input" ${isLocked ? 'disabled' : ''} ${!isLocked ? 'required' : ''} placeholder="Search teacher..." value="${isLocked && sub.teacher_first ? `${sub.teacher_first} ${sub.teacher_last}` : ''}" data-subject-id="${sub.subject_id}" data-teacher-id="${sub.teacher_id || ''}">
+            <input type="hidden" name="teacher_id[]" value="${sub.teacher_id || ''}">
+            <div class="teacher-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;background:white;border:1px solid #ccc;max-height:200px;overflow-y:auto;z-index:1000;border-radius:4px;box-shadow:0 2px 4px rgba(0,0,0,0.1);"></div>
+          </div>
+        </div>
+      </div>
+    `);
+  });
+
+  document.getElementById('autoScheduleSubmit').disabled = false;
+  openModal('autoScheduleModal');
+
+  // Add event listeners for teacher search
+  document.querySelectorAll('.auto-teacher-input').forEach(input => {
+    input.addEventListener('input', handleTeacherSearch);
+    input.addEventListener('focus', handleTeacherSearch);
+    input.addEventListener('blur', () => setTimeout(() => {
+      const suggestions = input.parentElement.querySelector('.teacher-suggestions');
+      if (suggestions) suggestions.style.display = 'none';
+    }, 150));
+  });
+}
+
+function handleAutoScheduleSubmit(e) {
+  const rows = Array.from(document.querySelectorAll('.auto-subject-row'));
+  const hidden = document.getElementById('autoScheduleHidden');
+  hidden.innerHTML = '';
+  
+  // Only send UNLOCKED subjects to be added
+  // Locked subjects are preserved in the database as-is
+  const unlockedRows = rows.filter(row => !row.classList.contains('locked'));
+  
+  if (!unlockedRows.length) {
+    e.preventDefault();
+    alert('No new subjects to schedule. All subjects are either locked or already scheduled.');
+    return false;
+  }
+
+  let missingTeacher = false;
+  unlockedRows.forEach(row => {
+    const subjectId = row.dataset.subjectId;
+    const teacherHidden = row.querySelector('input[name="teacher_id[]"]');
+    const homeroomRadio = row.querySelector('input[type="radio"][name="homeroom_subject"]');
+    
+    if (!teacherHidden || !teacherHidden.value) {
+      missingTeacher = true;
+      return;
+    }
+    
+    const isHomeroom = homeroomRadio && homeroomRadio.checked ? '1' : '0';
+    hidden.insertAdjacentHTML('beforeend', `
+      <input type="hidden" name="subject_id[]" value="${subjectId}">
+      <input type="hidden" name="teacher_id[]" value="${teacherHidden.value}">
+      <input type="hidden" name="is_homeroom[]" value="${isHomeroom}">
+    `);
+  });
+
+  if (missingTeacher) {
+    e.preventDefault();
+    alert('Please select a teacher for every new subject before creating the schedule.');
+    return false;
+  }
+
+  return true;
+}
+
+function handleTeacherSearch(e) {
+  const input = e.target;
+  const query = input.value.toLowerCase().trim();
+  const suggestionsDiv = input.parentElement.querySelector('.teacher-suggestions');
+  const hiddenInput = input.nextElementSibling;
+
+  if (query.length === 0) {
+    suggestionsDiv.style.display = 'none';
+    hiddenInput.value = '';
+    input.dataset.teacherId = '';
+    return;
+  }
+
+  const matches = AUTO_TEACHERS.filter(t => 
+    `${t.first_name} ${t.last_name}`.toLowerCase().includes(query)
+  ).slice(0, 10);
+
+  suggestionsDiv.innerHTML = matches.map(t => 
+    `<div class="suggestion-item" data-id="${t.id}" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #eee;font-size:14px;">${t.first_name} ${t.last_name}</div>`
+  ).join('');
+
+  suggestionsDiv.style.display = matches.length ? 'block' : 'none';
+
+  suggestionsDiv.querySelectorAll('.suggestion-item').forEach(item => {
+    item.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      input.value = item.textContent;
+      hiddenInput.value = item.dataset.id;
+      input.dataset.teacherId = item.dataset.id;
+      suggestionsDiv.style.display = 'none';
+    });
+  });
+}
 
 // ══════════════════════════════════════════
 // EDIT MODAL CONFLICT CHECKER
