@@ -1640,6 +1640,22 @@ def auto_create_schedule(sec_id):
         form_homerooms = request.form.getlist('is_homeroom[]') or []
         form_homeroom = request.form.get('homeroom_subject')
         homeroom_id = form_homeroom or None
+
+        # Defensive parsing: the auto-schedule modal can include hidden teacher inputs per row
+        # and also insert another set of hidden fields on submit. If that happens, the browser
+        # submits extra teacher_id[] values and the lengths won't match.
+        if form_subjects and form_teachers and len(form_subjects) != len(form_teachers):
+            if len(form_teachers) > len(form_subjects):
+                form_teachers = form_teachers[-len(form_subjects):]
+            else:
+                flash('Please select a teacher for every subject before creating the schedule.', 'danger')
+                return redirect(url_for('schedule', sec_id=sec_id))
+
+        if form_subjects and form_homerooms and len(form_homerooms) != len(form_subjects):
+            if len(form_homerooms) > len(form_subjects):
+                form_homerooms = form_homerooms[-len(form_subjects):]
+            else:
+                form_homerooms = []
         if form_subjects and form_teachers and len(form_subjects) == len(form_teachers):
             subjects = [
                 {
@@ -1747,11 +1763,12 @@ def auto_create_schedule(sec_id):
     others = [item for item in parsed if item != homeroom and item != esp]
 
     # Define priority subjects that must be scheduled
-    priority_items = set()
+    # Use IDs (hashable) rather than dict objects
+    priority_subject_ids = set()
     if homeroom:
-        priority_items.add(homeroom)
+        priority_subject_ids.add(homeroom['subject_id'])
     if esp:
-        priority_items.add(esp)
+        priority_subject_ids.add(esp['subject_id'])
     # Assuming "first subject" refers to homeroom as it's scheduled in the first period
 
     # Validate teacher workload - ensure no teacher teaches more than MAX_SECTIONS_PER_TEACHER sections
@@ -1917,7 +1934,7 @@ def auto_create_schedule(sec_id):
                     break
 
             if selected_slot is None:
-                if item in priority_items:
+                if subject_id in priority_subject_ids:
                     failed_subjects.append((item, day))
                 # For non-priority subjects, skip silently if no slot available
                 continue

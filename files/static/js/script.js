@@ -105,6 +105,15 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
   const container = document.getElementById(containerId);
   if (!container) return;
 
+  const resolveDeleteAction = (base, sch) => {
+    if (!base) return null;
+    if (typeof base === 'function') {
+      try { return base(sch); } catch (_) { return null; }
+    }
+    if (typeof base === 'string') return `${base}/${sch.id}`;
+    return null;
+  };
+
   const DAYS       = ['Monday','Tuesday','Wednesday','Thursday','Friday'];
   const START_HOUR = 7;
   const END_HOUR   = 17;
@@ -313,6 +322,7 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
       const color = colorMap[colorKey];
 
       const { padding, html: contentHtml } = buildEventContent(sch, heightPx);
+      const deleteAction = resolveDeleteAction(deleteBase, sch);
 
       html += `
         <div class="tt-event" style="
@@ -331,8 +341,8 @@ function renderTimetable(schedules, containerId, deleteBase, colorBy = 'subject_
           justify-content:flex-start;
         " title="${sch.subject_name} • ${sch.teacher_name} • ${label12(sch.time_start)}–${label12(sch.time_end)}">
           ${contentHtml}
-          ${deleteBase ? `
-          <form method="POST" action="${deleteBase}/${sch.id}" style="display:inline;" onsubmit="return confirm('Remove this schedule entry?')">
+          ${deleteAction ? `
+          <form method="POST" action="${deleteAction}" style="display:inline;" onsubmit="return confirm('Remove this schedule entry?')">
             <button type="submit" style="position:absolute;top:3px;right:4px;width:16px;height:16px;border-radius:50%;background:rgba(0,0,0,.25);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;" title="Remove">
               <svg viewBox="0 0 24 24" style="width:9px;height:9px;fill:white"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>

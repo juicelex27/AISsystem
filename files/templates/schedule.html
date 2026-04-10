@@ -317,6 +317,11 @@
     <form id="editScheduleForm" method="POST" action="" onsubmit="return handleEditSubmit(event)">
       <input type="hidden" name="section_id" value="{{ section.id }}">
       <input type="hidden" id="e_semester_stored" name="semester">
+      <!-- When selects are disabled, their values are not submitted; mirror locked fields here -->
+      <input type="hidden" id="e_subject_id_hidden" name="subject_id" disabled>
+      <input type="hidden" id="e_strand_id_hidden" name="strand_id" disabled>
+      <input type="hidden" id="e_teacher_id_hidden" name="teacher_id" disabled>
+      <input type="hidden" id="e_day_hidden" name="day" disabled>
       <div class="modal-body" style="display:flex;flex-direction:column;gap:0;">
 
         <!-- Whole Year paired-entry sync checkbox -->
@@ -474,7 +479,7 @@
 {% block extra_js %}
 <script>
 const SECTION_ID   = {{ section.id }};
-const DELETE_BASE  = "/schedule/delete";
+const DELETE_BASE  = (sch) => "/schedule/delete/" + sch.id + "/" + SECTION_ID;
 const API_CONFLICT = "/api/schedule/check_conflict";
 const ALL_SUBJECTS_FALLBACK = {{ all_subjects_json | default([]) | tojson }};
 const AUTO_JHS_SUBJECTS = {{ auto_jhs_subjects | default([]) | tojson }};
@@ -856,7 +861,7 @@ function openAutoScheduleModal() {
           <label style="font-size:13px;font-weight:600;color:#0f172a;">Teacher ${isLocked ? '<span style="color:#dc2626;">(Locked)</span>' : ''}</label>
           <div style="position:relative;">
             <input type="text" class="form-control auto-teacher-input" ${isLocked ? 'disabled' : ''} ${!isLocked ? 'required' : ''} placeholder="Search teacher..." value="${isLocked && sub.teacher_first ? `${sub.teacher_first} ${sub.teacher_last}` : ''}" data-subject-id="${sub.subject_id}" data-teacher-id="${sub.teacher_id || ''}">
-            <input type="hidden" name="teacher_id[]" value="${sub.teacher_id || ''}">
+            <input type="hidden" class="auto-teacher-id" value="${sub.teacher_id || ''}">
             <div class="teacher-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;background:white;border:1px solid #ccc;max-height:200px;overflow-y:auto;z-index:1000;border-radius:4px;box-shadow:0 2px 4px rgba(0,0,0,0.1);"></div>
           </div>
         </div>
@@ -896,7 +901,7 @@ function handleAutoScheduleSubmit(e) {
   let missingTeacher = false;
   unlockedRows.forEach(row => {
     const subjectId = row.dataset.subjectId;
-    const teacherHidden = row.querySelector('input[name="teacher_id[]"]');
+    const teacherHidden = row.querySelector('input.auto-teacher-id');
     const homeroomRadio = row.querySelector('input[type="radio"][name="homeroom_subject"]');
     
     if (!teacherHidden || !teacherHidden.value) {
@@ -925,11 +930,11 @@ function handleTeacherSearch(e) {
   const input = e.target;
   const query = input.value.toLowerCase().trim();
   const suggestionsDiv = input.parentElement.querySelector('.teacher-suggestions');
-  const hiddenInput = input.nextElementSibling;
+  const hiddenInput = input.parentElement.querySelector('.auto-teacher-id');
 
   if (query.length === 0) {
     suggestionsDiv.style.display = 'none';
-    hiddenInput.value = '';
+    if (hiddenInput) hiddenInput.value = '';
     input.dataset.teacherId = '';
     return;
   }
@@ -965,8 +970,8 @@ const eEl = id => document.getElementById(id);
 
 function initEditConflictChecker() {
   document.querySelectorAll('.e-checkable').forEach(el => {
-    el.addEventListener('change', () => editScheduleCheck());
-    el.addEventListener('input',  () => editScheduleCheck());
+    el.addEventListener('change', () => { syncEditHiddenValues(); editScheduleCheck(); });
+    el.addEventListener('input',  () => { syncEditHiddenValues(); editScheduleCheck(); });
   });
   eEl('eForceCheck').addEventListener('change', updateEForce);
 }
@@ -1038,6 +1043,25 @@ function updateEditWorkload(workload, isIncomplete) {
   fill.style.width=pct+'%';
 }
 
+function setEditHiddenEnabled(hiddenId, enabled) {
+  const el = eEl(hiddenId);
+  if (!el) return;
+  el.disabled = !enabled;
+}
+
+function syncEditHiddenValues() {
+  const pairs = [
+    ['e_subject_id', 'e_subject_id_hidden'],
+    ['e_strand_id',  'e_strand_id_hidden'],
+    ['e_teacher_id', 'e_teacher_id_hidden'],
+    ['e_day',        'e_day_hidden'],
+  ];
+  pairs.forEach(([src, hid]) => {
+    const s = eEl(src), h = eEl(hid);
+    if (s && h) h.value = s.value;
+  });
+}
+
 // Lock/unlock edit modal fields based on what's editable
 function setEditFieldLocks(isPairedWY) {
   // Subject and Strand are ALWAYS locked — change by delete+re-add
@@ -1048,6 +1072,8 @@ function setEditFieldLocks(isPairedWY) {
     el.style.opacity = '0.6';
     el.style.cursor = 'not-allowed';
   });
+  setEditHiddenEnabled('e_subject_id_hidden', true);
+  setEditHiddenEnabled('e_strand_id_hidden', true);
 
   // For Whole Year paired entries: only Time + Room are editable
   // Teacher and Day are also locked
@@ -1064,6 +1090,9 @@ function setEditFieldLocks(isPairedWY) {
       el.style.cursor = '';
     }
   });
+  setEditHiddenEnabled('e_teacher_id_hidden', isPairedWY);
+  setEditHiddenEnabled('e_day_hidden', isPairedWY);
+  syncEditHiddenValues();
   // Toggle teacher lock note visibility
   const tLock = eEl('eTeacherLockNote'), tReq = eEl('eTeacherRequiredNote');
   if (tLock) { tLock.style.display = isPairedWY ? '' : 'none'; }
@@ -1079,7 +1108,7 @@ function openEditModal(sch) {
   eEl('e_strand_id').value=sch.strand_id||'';
   if (sch.strand_id) {
     fetch(`/api/strand/${sch.strand_id}/subjects`).then(r=>r.json())
-      .then(data=>populateSubjects(data,'e_subject_id',sch.subject_id)).catch(()=>{});
+      .then(data=>{ populateSubjects(data,'e_subject_id',sch.subject_id); syncEditHiddenValues(); }).catch(()=>{});
   }
   eEl('e_teacher_id').value=sch.teacher_id;
   eEl('e_day').value=sch.day;
@@ -1119,6 +1148,7 @@ function openEditModal(sch) {
 }
 
 function handleEditSubmit(e) {
+  syncEditHiddenValues();
   if (eHasHardError) { e.preventDefault(); return false; }
   if (eCurrentConflicts.length && !eEl('eForceCheck').checked) { e.preventDefault(); return false; }
   return true;
