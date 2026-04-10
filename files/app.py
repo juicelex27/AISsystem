@@ -2227,20 +2227,47 @@ def delete_schedule(sch_id, sec_id):
     return redirect(url_for('schedule', sec_id=sec_id))
 
 
-@app.route('/schedule/<int:sec_id>/flush', methods=['POST'])
+# Add this route to app.py, near the existing flush_schedule route:
+
+@app.route('/schedule/bulk_flush', methods=['POST'])
 @login_required
-def flush_schedule(sec_id):
-    conn = get_db()
-    section = conn.execute("SELECT section_name FROM sections WHERE id=?", (sec_id,)).fetchone()
-    if not section:
-        conn.close()
-        flash('Section not found.', 'danger')
+def bulk_flush_schedules():
+    section_ids = request.form.getlist('section_ids')
+    if not section_ids:
+        flash('No sections selected.', 'warning')
         return redirect(url_for('sections'))
-    count = conn.execute("SELECT COUNT(*) FROM schedules WHERE section_id=?", (sec_id,)).fetchone()[0]
-    conn.execute("DELETE FROM schedules WHERE section_id=?", (sec_id,))
-    conn.commit(); conn.close()
-    flash(f'All {count} schedule entr{"ies" if count != 1 else "y"} for {section["section_name"]} have been cleared.', 'success')
-    return redirect(url_for('schedule', sec_id=sec_id))
+
+    conn = get_db()
+    total_deleted = 0
+    section_names = []
+
+    for sec_id in section_ids:
+        try:
+            sec_id_int = int(sec_id)
+        except (ValueError, TypeError):
+            continue
+        section = conn.execute("SELECT section_name FROM sections WHERE id=?", (sec_id_int,)).fetchone()
+        if not section:
+            continue
+        count = conn.execute(
+            "SELECT COUNT(*) FROM schedules WHERE section_id=?", (sec_id_int,)
+        ).fetchone()[0]
+        conn.execute("DELETE FROM schedules WHERE section_id=?", (sec_id_int,))
+        total_deleted += count
+        if count > 0:
+            section_names.append(section['section_name'])
+
+    conn.commit()
+    conn.close()
+
+    if total_deleted == 0:
+        flash('No schedule entries were cleared (sections had no schedules).', 'warning')
+    elif len(section_names) == 1:
+        flash(f'Cleared {total_deleted} schedule entr{"ies" if total_deleted != 1 else "y"} from {section_names[0]}.', 'success')
+    else:
+        flash(f'Cleared {total_deleted} schedule entr{"ies" if total_deleted != 1 else "y"} across {len(section_names)} section(s).', 'success')
+
+    return redirect(url_for('schedules'))
 
 # ── STUDENTS ──────────────────────────────────────────────────
 
