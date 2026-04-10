@@ -1,0 +1,156 @@
+{% extends "layout.html" %}
+{% block title %}Strand Management{% endblock %}
+{% block page_title %}Strand Management{% endblock %}
+{% block page_subtitle %}Manage curriculum strands and assign subjects{% endblock %}
+{% block header_actions %}
+  <button class="btn btn-primary" onclick="openModal('addStrandModal')">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+    Add Strand
+  </button>
+{% endblock %}
+
+{% block content %}
+
+{% if strands_data %}
+<div class="strands-grid">
+  {% for item in strands_data %}
+  {% set st = item.strand %}
+  {% set assigned = item.subjects %}
+  <div class="strand-card">
+    <div class="strand-card-header">
+      <div class="strand-badge-big">{{ st.strand_code }}</div>
+      <div class="strand-info">
+        <div class="strand-title">{{ st.strand_name }}</div>
+        <div class="strand-code">{{ st.strand_code }} · {{ assigned|length }} subject(s)</div>
+        {% if st.description %}<div class="strand-desc">{{ st.description }}</div>{% endif %}
+      </div>
+      <div class="strand-actions">
+        <button class="btn btn-secondary btn-sm" onclick="editStrand({{ st.id }})">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+        </button>
+        <form id="del-strand-{{ st.id }}" method="POST" action="{{ url_for('delete_strand', stid=st.id) }}" style="display:inline;">
+          <button type="button" class="btn btn-danger btn-sm" onclick="confirmDelete('del-strand-{{ st.id }}')">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div class="strand-subjects-section">
+      <div class="strand-subjects-label">Assigned Subjects</div>
+
+      {% if assigned %}
+      <div class="strand-mini-cards">
+        {% for sub in assigned %}
+        <div class="strand-mini-card">
+          <div class="mc-code">{{ sub.subject_code }}</div>
+          <div class="mc-name">{{ sub.subject_name }}</div>
+          <form method="POST" action="{{ url_for('remove_subject_from_strand', stid=st.id, sid=sub.id) }}" style="display:inline;" onsubmit="return confirm('Remove this subject from strand?')">
+            <button type="submit" class="mc-remove" title="Remove">
+              <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+          </form>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">No subjects assigned yet.</p>
+      {% endif %}
+
+      <!-- Quick assign form -->
+      <form method="POST" action="{{ url_for('assign_subject_to_strand', stid=st.id) }}" class="strand-add-subject">
+        <select name="subject_ids" multiple required style="min-height:60px;padding:6px 10px;font-size:12px;border:1.5px solid var(--border);border-radius:var(--radius-sm);font-family:'Inter',sans-serif;width:100%;">
+          {% for sub in all_subjects %}
+          {% set already = sub.id in assigned|map(attribute='id')|list %}
+          {% if not already %}
+          <option value="{{ sub.id }}">{{ sub.subject_name }} ({{ sub.subject_code }})</option>
+          {% endif %}
+          {% endfor %}
+        </select>
+        <button type="submit" class="btn btn-primary btn-sm" style="white-space:nowrap;flex-shrink:0;">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          Add
+        </button>
+      </form>
+      <p style="font-size:11px;color:var(--text-muted);margin-top:4px;">Hold Ctrl / Cmd to select multiple subjects.</p>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% else %}
+<div class="content-card">
+  <div class="empty-state">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+    <h3>No strands yet</h3>
+    <p>Create a strand and assign subjects to it</p>
+  </div>
+</div>
+{% endif %}
+
+<!-- ADD STRAND MODAL -->
+<div class="modal-overlay" id="addStrandModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Add New Strand</h3>
+      <button class="modal-close" onclick="closeModal('addStrandModal')">×</button>
+    </div>
+    <form method="POST" action="{{ url_for('add_strand') }}">
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Strand Code</label>
+            <input type="text" name="strand_code" class="form-control" placeholder="e.g. STEM" required>
+          </div>
+          <div class="form-group">
+            <label>Strand Name</label>
+            <input type="text" name="strand_name" class="form-control" placeholder="e.g. Science, Technology, Engineering and Mathematics" required>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Description <span style="color:#9ca3af;font-weight:400;">(optional)</span></label>
+          <input type="text" name="description" class="form-control" placeholder="Brief description of this strand">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('addStrandModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Strand</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- EDIT STRAND MODAL -->
+<div class="modal-overlay" id="editStrandModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Edit Strand</h3>
+      <button class="modal-close" onclick="closeModal('editStrandModal')">×</button>
+    </div>
+    <form id="edit_strand_form" method="POST" action="">
+      <input type="hidden" id="edit_strand_id">
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Strand Code</label>
+            <input type="text" id="edit_strand_code" name="strand_code" class="form-control" required>
+          </div>
+          <div class="form-group">
+            <label>Strand Name</label>
+            <input type="text" id="edit_strand_name" name="strand_name" class="form-control" required>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <input type="text" id="edit_strand_description" name="description" class="form-control">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('editStrandModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% endblock %}

@@ -1,0 +1,341 @@
+{% extends "layout.html" %}
+{% block title %}Attendance Categories{% endblock %}
+{% block page_title %}Attendance Categories{% endblock %}
+{% block page_subtitle %}Organize events by type — School Orgs, Student Gov, Intramurals, etc.{% endblock %}
+
+{% block header_actions %}
+  <a href="{{ url_for('attendance_home') }}" class="btn btn-secondary">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+    Back to Attendance
+  </a>
+  <button class="btn btn-primary" onclick="openModal('addCatModal')">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+    Add Category
+  </button>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+.cat-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px; }
+.cat-card { background:var(--bg-white);border:1px solid var(--border);border-radius:var(--radius-md);
+  box-shadow:var(--shadow-sm);overflow:hidden;display:flex;flex-direction:column;
+  transition:box-shadow .2s,transform .2s; }
+.cat-card:hover { box-shadow:var(--shadow-md);transform:translateY(-2px); }
+.cat-bar  { height:6px; }
+.cat-body { padding:16px 18px;flex:1;display:flex;align-items:flex-start;gap:14px; }
+.cat-icon-box { width:52px;height:52px;border-radius:14px;display:flex;align-items:center;
+  justify-content:center;font-size:24px;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.12); }
+.cat-name  { font-size:15px;font-weight:800;color:var(--text-primary);letter-spacing:-.2px; }
+.cat-desc  { font-size:12px;color:var(--text-muted);margin-top:3px;line-height:1.4; }
+.cat-count { font-size:11px;font-weight:700;color:var(--text-secondary);margin-top:6px; }
+.cat-footer { padding:10px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end; }
+
+/* Color swatch picker */
+.color-swatches { display:flex;flex-wrap:wrap;gap:8px;margin-top:6px; }
+.color-swatch { width:30px;height:30px;border-radius:8px;cursor:pointer;border:2px solid transparent;
+  transition:transform .15s,border-color .15s;flex-shrink:0; }
+.color-swatch:hover { transform:scale(1.15); }
+.color-swatch.selected { border-color:var(--text-primary);transform:scale(1.1); }
+
+/* Emoji picker */
+.emoji-grid { display:flex;flex-wrap:wrap;gap:6px;margin-top:6px; }
+.emoji-btn { width:36px;height:36px;border-radius:8px;border:1.5px solid var(--border);
+  background:var(--bg-page);font-size:18px;cursor:pointer;display:flex;align-items:center;
+  justify-content:center;transition:background .15s,border-color .15s,transform .1s; }
+.emoji-btn:hover { background:var(--border);transform:scale(1.1); }
+.emoji-btn.selected { border-color:rgba(160,24,80,.6);background:rgba(160,24,80,.08);transform:scale(1.1); }
+
+/* Live preview */
+.cat-preview { display:flex;align-items:center;gap:12px;padding:12px 14px;
+  border-radius:var(--radius-sm);border:1.5px solid var(--border);background:var(--bg-page); }
+.cat-preview-icon { width:42px;height:42px;border-radius:10px;display:flex;align-items:center;
+  justify-content:center;font-size:20px;flex-shrink:0; }
+.cat-preview-bar { height:4px;border-radius:2px;margin-top:4px; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+{% set COURSE_COLORS = [
+  ('--blue-course',        '#3b82f6'),
+  ('--teal-course',        '#14b8a6'),
+  ('--yellow-course',      '#f59e0b'),
+  ('--pink-course',        '#ec4899'),
+  ('--dark-teal-course',   '#8b5cf6'),
+  ('--medium-blue-course', '#6366f1'),
+  ('--mint-green-course',  '#06b6d4'),
+  ('--green-course',       '#22c55e'),
+  ('--orange-course',      '#f97316'),
+  ('--slate-blue-course',  '#0ea5e9'),
+  ('--dark-green-course',  '#10b981'),
+  ('--orange-red-course',  '#ef4444'),
+] %}
+
+{% if categories %}
+<div class="cat-grid">
+  {% for cat in categories %}
+  {% set ci = loop.index0 % 12 %}
+  {% set cv = COURSE_COLORS[ci][0] %}
+  <div class="cat-card">
+    <div class="cat-bar" style="background:var({{ cv }});"></div>
+    <div class="cat-body">
+      <div class="cat-icon-box" style="background:var({{ cv }});">
+        <span style="filter:drop-shadow(0 1px 2px rgba(0,0,0,.3));">{{ cat.icon }}</span>
+      </div>
+      <div style="flex:1;min-width:0;">
+        <div class="cat-name">{{ cat.name }}</div>
+        {% if cat.description %}<div class="cat-desc">{{ cat.description }}</div>{% endif %}
+        <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+          <div class="cat-preview-bar" style="width:40px;background:var({{ cv }});"></div>
+          <span class="cat-count">{{ cat.event_count }} event{{ 's' if cat.event_count != 1 else '' }}</span>
+        </div>
+      </div>
+    </div>
+    <div class="cat-footer">
+      <form method="POST" action="{{ url_for('share_attendance_category', cid=cat.id) }}" style="display:inline;">
+        <button type="submit" class="btn btn-secondary btn-sm" title="{{ 'Unshare from SSG Secretary General' if cat.is_shared else 'Share with SSG Secretary General' }}">
+          {{ '🔓 Shared' if cat.is_shared else '🔒 Share' }}
+        </button>
+      </form>
+      <button class="btn btn-secondary btn-sm"
+              onclick="editCat({{ cat.id }}, {{ cat.name|tojson }}, {{ (cat.description or '')|tojson }}, {{ cat.color|tojson }}, {{ cat.icon|tojson }})">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+        Edit
+      </button>
+      <form method="POST" action="{{ url_for('delete_attendance_category', cid=cat.id) }}"
+            onsubmit="return confirm('Delete this category?')" style="display:inline;">
+        <button type="submit" class="btn btn-danger btn-sm">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+        </button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="content-card">
+  <div class="empty-state">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+    <h3>No categories yet</h3>
+    <p>Add categories like School Organizations, Student Government, Intramurals…</p>
+  </div>
+</div>
+{% endif %}
+
+<!-- ── ADD MODAL ── -->
+<div class="modal-overlay" id="addCatModal">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header"><h3>Add Category</h3>
+      <button class="modal-close" onclick="closeModal('addCatModal')">×</button></div>
+    <form method="POST" action="{{ url_for('add_attendance_category') }}" id="addCatForm">
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:16px;">
+
+        <!-- Live preview -->
+        <div class="cat-preview" id="add_preview">
+          <div class="cat-preview-icon" id="add_prev_icon" style="background:#3b82f6;">🎯</div>
+          <div style="flex:1;">
+            <div style="font-size:13px;font-weight:700;color:var(--text-primary);" id="add_prev_name">Category name</div>
+            <div class="cat-preview-bar" id="add_prev_bar" style="background:#3b82f6;width:60px;margin-top:6px;"></div>
+          </div>
+        </div>
+
+        <!-- Name -->
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Name *</label>
+          <input type="text" name="name" id="add_name" class="form-control"
+                 placeholder="e.g. Intramurals" required oninput="updateAddPreview()">
+        </div>
+
+        <!-- Description -->
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Description <span style="color:var(--text-muted);font-weight:400;">(optional)</span></label>
+          <input type="text" name="description" class="form-control" placeholder="Brief description">
+        </div>
+
+        <!-- Color swatches -->
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Color</label>
+          <input type="hidden" name="color" id="add_color" value="#3b82f6">
+          <div class="color-swatches" id="add_swatches"></div>
+        </div>
+
+        <!-- Emoji / symbol picker -->
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Icon / Symbol</label>
+          <input type="hidden" name="icon" id="add_icon" value="🎯">
+          <div class="emoji-grid" id="add_emojis"></div>
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('addCatModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Category</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── EDIT MODAL ── -->
+<div class="modal-overlay" id="editCatModal">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header"><h3>Edit Category</h3>
+      <button class="modal-close" onclick="closeModal('editCatModal')">×</button></div>
+    <form id="editCatForm" method="POST" action="">
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:16px;">
+
+        <!-- Live preview -->
+        <div class="cat-preview" id="edit_preview">
+          <div class="cat-preview-icon" id="edit_prev_icon">🎯</div>
+          <div style="flex:1;">
+            <div style="font-size:13px;font-weight:700;color:var(--text-primary);" id="edit_prev_name">—</div>
+            <div class="cat-preview-bar" id="edit_prev_bar" style="width:60px;margin-top:6px;"></div>
+          </div>
+        </div>
+
+        <!-- Name -->
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Name *</label>
+          <input type="text" id="ec_name" name="name" class="form-control" required oninput="updateEditPreview()">
+        </div>
+
+        <!-- Description -->
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Description</label>
+          <input type="text" id="ec_desc" name="description" class="form-control">
+        </div>
+
+        <!-- Color swatches -->
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Color</label>
+          <input type="hidden" id="ec_color" name="color" value="#3b82f6">
+          <div class="color-swatches" id="edit_swatches"></div>
+        </div>
+
+        <!-- Emoji picker -->
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Icon / Symbol</label>
+          <input type="hidden" id="ec_icon" name="icon" value="🎯">
+          <div class="emoji-grid" id="edit_emojis"></div>
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('editCatModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// ── Config ────────────────────────────────────────────────────
+const COURSE_COLORS = [
+  { var: '--blue-course',        hex: '#3b82f6' },
+  { var: '--teal-course',        hex: '#14b8a6' },
+  { var: '--yellow-course',      hex: '#f59e0b' },
+  { var: '--pink-course',        hex: '#ec4899' },
+  { var: '--dark-teal-course',   hex: '#8b5cf6' },
+  { var: '--medium-blue-course', hex: '#6366f1' },
+  { var: '--mint-green-course',  hex: '#06b6d4' },
+  { var: '--green-course',       hex: '#22c55e' },
+  { var: '--orange-course',      hex: '#f97316' },
+  { var: '--slate-blue-course',  hex: '#0ea5e9' },
+  { var: '--dark-green-course',  hex: '#10b981' },
+  { var: '--orange-red-course',  hex: '#ef4444' },
+];
+
+const EMOJIS = [
+  '🎯','🏫','🏛️','🎽','🏆','🎓','📋','📌','🌟','🔔',
+  '🎪','⚽','🏀','🎾','🏐','🏅','🥇','🎭','🎨','🎵',
+  '📚','🔬','🧪','🖥️','✏️','📐','🌍','🤝','💡','🚩',
+  '🧩','🎤','📢','🏃','🤸','⚡','🌈','🎗️','🏠','❤️',
+];
+
+// ── Render helpers ─────────────────────────────────────────────
+function resolveColor(hex) {
+  // Find matching course var, or return hex as computed value
+  const match = COURSE_COLORS.find(c => c.hex.toLowerCase() === hex.toLowerCase());
+  return match ? `var(${match.var})` : hex;
+}
+
+function renderSwatches(containerId, inputId, currentHex, prefix) {
+  const wrap = document.getElementById(containerId);
+  wrap.innerHTML = '';
+  COURSE_COLORS.forEach(c => {
+    const sw = document.createElement('div');
+    sw.className = 'color-swatch' + (c.hex.toLowerCase() === currentHex.toLowerCase() ? ' selected' : '');
+    sw.style.background = `var(${c.var})`;
+    sw.title = c.var.replace('--','').replace(/-course/,'').replace(/-/g,' ');
+    sw.addEventListener('click', () => {
+      document.getElementById(inputId).value = c.hex;
+      wrap.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
+      sw.classList.add('selected');
+      if (prefix === 'add') updateAddPreview();
+      else updateEditPreview();
+    });
+    wrap.appendChild(sw);
+  });
+}
+
+function renderEmojis(containerId, inputId, currentEmoji, prefix) {
+  const wrap = document.getElementById(containerId);
+  wrap.innerHTML = '';
+  EMOJIS.forEach(em => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'emoji-btn' + (em === currentEmoji ? ' selected' : '');
+    btn.textContent = em;
+    btn.addEventListener('click', () => {
+      document.getElementById(inputId).value = em;
+      wrap.querySelectorAll('.emoji-btn').forEach(b => b.classList.remove('selected'));
+      btn.classList.add('selected');
+      if (prefix === 'add') updateAddPreview();
+      else updateEditPreview();
+    });
+    wrap.appendChild(btn);
+  });
+}
+
+// ── Preview updates ────────────────────────────────────────────
+function updateAddPreview() {
+  const color = resolveColor(document.getElementById('add_color').value);
+  const icon  = document.getElementById('add_icon').value;
+  const name  = document.getElementById('add_name').value || 'Category name';
+  document.getElementById('add_prev_icon').style.background = color;
+  document.getElementById('add_prev_icon').textContent = icon;
+  document.getElementById('add_prev_name').textContent  = name;
+  document.getElementById('add_prev_bar').style.background = color;
+}
+
+function updateEditPreview() {
+  const color = resolveColor(document.getElementById('ec_color').value);
+  const icon  = document.getElementById('ec_icon').value;
+  const name  = document.getElementById('ec_name').value || '—';
+  document.getElementById('edit_prev_icon').style.background = color;
+  document.getElementById('edit_prev_icon').textContent = icon;
+  document.getElementById('edit_prev_name').textContent  = name;
+  document.getElementById('edit_prev_bar').style.background = color;
+}
+
+// ── Edit ───────────────────────────────────────────────────────
+function editCat(id, name, desc, color, icon) {
+  document.getElementById('ec_name').value = name;
+  document.getElementById('ec_desc').value = desc;
+  document.getElementById('ec_color').value = color;
+  document.getElementById('ec_icon').value  = icon;
+  document.getElementById('editCatForm').action = `/attendance/categories/edit/${id}`;
+  renderSwatches('edit_swatches', 'ec_color', color, 'edit');
+  renderEmojis('edit_emojis', 'ec_icon', icon, 'edit');
+  updateEditPreview();
+  openModal('editCatModal');
+}
+
+// ── Init ───────────────────────────────────────────────────────
+renderSwatches('add_swatches', 'add_color', '#3b82f6', 'add');
+renderEmojis('add_emojis', 'add_icon', '🎯', 'add');
+updateAddPreview();
+</script>
+{% endblock %}

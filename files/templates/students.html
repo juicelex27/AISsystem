@@ -1,0 +1,1031 @@
+{% extends "layout.html" %}
+{% block title %}Students{% endblock %}
+{% block page_title %}Students{% endblock %}
+{% block page_subtitle %}Manage student records and enrollment{% endblock %}
+
+{% block header_actions %}
+  <button class="btn btn-secondary" onclick="openAutoAssignModal()">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:16px;height:16px;"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+    Auto-Assign Section
+  </button>
+  <button class="btn btn-danger" onclick="openModal('flushStudentsModal')">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:16px;height:16px;"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+    Flush Students
+  </button>
+  <button class="btn btn-secondary" onclick="exportCSV()">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+    Export CSV
+  </button>
+  <button class="btn btn-secondary" onclick="openModal('bulkAddModal')">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>
+    Bulk Import
+  </button>
+  <button class="btn btn-primary" onclick="openAddModal()">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+    Add Student
+  </button>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+.status-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;
+}
+.status-enrolled  { background: #d1fae5; color: #065f46; }
+.status-irregular { background: #fef3c7; color: #92400e; }
+.status-dropped   { background: #fee2e2; color: #991b1b; }
+.status-graduated { background: #ede9fe; color: #5b21b6; }
+.filter-bar {
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  padding: 14px 20px; border-bottom: 1px solid var(--border);
+}
+.filter-bar input, .filter-bar select {
+  padding: 7px 12px; border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm); font-family: 'Inter', sans-serif;
+  font-size: 13px; color: var(--text-primary); background: var(--bg-page);
+  outline: none; transition: border-color .2s;
+}
+.filter-bar input:focus, .filter-bar select:focus { border-color: rgba(160,24,80,.5); }
+.filter-bar input { flex: 1; min-width: 180px; }
+.student-avatar {
+  width: 34px; height: 34px; border-radius: 50%;
+  background: var(--brand-gradient);
+  display: flex; align-items: center; justify-content: center;
+  color: white; font-weight: 700; font-size: 12px; flex-shrink: 0;
+}
+.bulk-csv-area {
+  width: 100%; min-height: 140px; padding: 12px;
+  font-family: 'Courier New', monospace; font-size: 12px;
+  border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+  resize: vertical; outline: none; background: var(--bg-page);
+  color: var(--text-primary); transition: border-color .2s;
+}
+.bulk-csv-area:focus { border-color: rgba(160,24,80,.5); }
+.csv-hint {
+  font-size: 11px; color: var(--text-muted);
+  background: var(--bg-page); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px;
+  margin-bottom: 12px; line-height: 1.7;
+}
+.csv-upload-zone {
+  display: flex; align-items: center; justify-content: center;
+  gap: 8px; padding: 14px; margin-bottom: 14px;
+  border: 2px dashed var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-page); cursor: pointer; transition: border-color .2s;
+  font-size: 13px; color: var(--text-secondary); font-weight: 500;
+}
+.csv-upload-zone:hover { border-color: rgba(160,24,80,.4); color: rgba(160,24,80,1); }
+.csv-upload-zone.has-file { border-color: #22c55e; color: #15803d; background: #f0fdf4; }
+.csv-divider {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+}
+.csv-divider span {
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .5px; white-space: nowrap;
+}
+.csv-divider::before,.csv-divider::after {
+  content:''; flex:1; height:1px; background:var(--border);
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.sort-icon { font-size: 11px; opacity: .5; margin-left: 3px; }
+
+/* ── PAGINATION ── */
+.pg-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 20px; flex-wrap: wrap; gap: 8px;
+}
+.pg-bar-top  { border-bottom: 1px solid var(--border); }
+.pg-bar-bottom { border-top: 1px solid var(--border); }
+.pg-info { font-size: 13px; color: var(--text-secondary); }
+.pg-info strong { color: var(--text-primary); }
+.pg-controls { display: flex; align-items: center; gap: 4px; }
+.pg-btn {
+  min-width: 34px; height: 34px; padding: 0 8px;
+  border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-white); color: var(--text-secondary);
+  font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: all .15s;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.pg-btn:hover:not(:disabled):not(.active) {
+  border-color: rgba(160,24,80,.5); color: rgba(160,24,80,1);
+}
+.pg-btn.active {
+  background: var(--brand-gradient); border-color: transparent;
+  color: white; font-weight: 700; box-shadow: 0 2px 8px rgba(160,24,80,.25);
+}
+.pg-btn:disabled { opacity: .35; cursor: not-allowed; }
+.pg-dots { padding: 0 4px; color: var(--text-muted); line-height: 34px; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-icon blue">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zm0 2.27L20 9l-8 4.36L4 9l8-3.73zM5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82z"/></svg>
+    </div>
+    <div><div class="stat-value">{{ total }}</div><div class="stat-label">Total Students</div></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon teal">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+    </div>
+    <div><div class="stat-value">{{ enrolled }}</div><div class="stat-label">Enrolled</div></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon pink">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+    </div>
+    <div><div class="stat-value">{{ sections|length }}</div><div class="stat-label">Sections</div></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon orange">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+    </div>
+    <div><div class="stat-value">{{ total - enrolled }}</div><div class="stat-label">Others</div></div>
+  </div>
+</div>
+
+<div class="content-card">
+
+  <div class="filter-bar">
+    <input type="text" id="searchInput" placeholder="Search name or student ID…">
+    <select id="filterSection">
+      <option value="">All Sections</option>
+      {% for sec in sections %}
+      <option value="{{ sec.section_name }}">Grade {{ sec.grade_level }} – {{ sec.section_name }}</option>
+      {% endfor %}
+    </select>
+    <select id="filterGender">
+      <option value="">All Genders</option>
+      <option>Male</option>
+      <option>Female</option>
+    </select>
+    <select id="filterStatus">
+      <option value="">All Status</option>
+      <option>Enrolled</option>
+      <option>Irregular</option>
+      <option>Dropped</option>
+      <option>Graduated</option>
+    </select>
+    <select id="filterGrade">
+      <option value="">All Grade Levels</option>
+      <option>Grade 7</option>
+      <option>Grade 8</option>
+      <option>Grade 9</option>
+      <option>Grade 10</option>
+      <option>Grade 11</option>
+      <option>Grade 12</option>
+    </select>
+  </div>
+
+  <!-- Pagination TOP -->
+  <div class="pg-bar pg-bar-top" id="pgTop" style="display:none;">
+    <div class="pg-info" id="pgInfoTop"></div>
+    <div class="pg-controls" id="pgCtrlTop"></div>
+  </div>
+
+  {% if students %}
+  <div class="data-table-wrap">
+    <table class="data-table" id="studentTable">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th class="sortable" onclick="sortTable('name')">Student <span class="sort-icon" id="si_name">↕</span></th>
+          <th class="sortable" onclick="sortTable('id')">Student ID <span class="sort-icon" id="si_id">↕</span></th>
+          <th class="sortable" onclick="sortTable('grade')">Grade <span class="sort-icon" id="si_grade">↕</span></th>
+          <th class="sortable" onclick="sortTable('section')">Section <span class="sort-icon" id="si_section">↕</span></th>
+          <th>Strand</th>
+          <th class="sortable" onclick="sortTable('gender')">Gender <span class="sort-icon" id="si_gender">↕</span></th>
+          <th class="sortable" onclick="sortTable('status')">Status <span class="sort-icon" id="si_status">↕</span></th>
+          <th style="text-align:right;">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="studentTbody">
+        {% for st in students %}
+        <tr class="student-row"
+            data-name="{{ st.first_name|lower }} {{ st.last_name|lower }}{% if st.middle_name %} {{ st.middle_name|lower }}{% endif %}"
+            data-id="{{ st.student_id|lower }}"
+            data-section="{{ st.section_name or '' }}"
+            data-status="{{ st.enrollment_status or '' }}"
+            data-grade="{{ st.grade_level or '' }}"
+            data-gender="{{ st.gender|title if st.gender else '' }}"
+            data-strand-id="{{ st.strand_id or '' }}">
+          <td class="row-num" style="color:#9ca3af;font-size:12px;">{{ loop.index }}</td>
+          <td>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <div class="student-avatar">{{ st.first_name[0]|upper }}{{ st.last_name[0]|upper }}</div>
+              <div>
+                <div style="font-weight:600;">{{ st.last_name }}, {{ st.first_name }}{% if st.middle_name %} {{ st.middle_name[0]|upper }}.{% endif %}</div>
+                {% if st.email %}<div style="font-size:11px;color:var(--text-muted);">{{ st.email }}</div>{% endif %}
+              </div>
+            </div>
+          </td>
+          <td><span class="badge badge-section">{{ st.student_id }}</span></td>
+          <td style="font-size:13px;color:var(--text-secondary);">{{ st.grade_level or '—' }}</td>
+          <td style="font-size:13px;">
+            {% if st.section_name %}
+              <a href="{{ url_for('section_student_list', sec_id=st.section_id) }}" style="color:rgba(160,24,80,.9);text-decoration:none;font-weight:500;">{{ st.section_name }}</a>
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% if st.strand_code %}<span class="badge badge-strand">{{ st.strand_code }}</span>
+            {% else %}<span style="color:var(--text-muted);">—</span>{% endif %}
+          </td>
+          <td>
+            {% set g = st.gender|upper if st.gender else '' %}
+            {% if g == 'MALE' %}<span style="background:#dbeafe;color:#1e40af;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;">♂ Male</span>
+            {% elif g == 'FEMALE' %}<span style="background:#fce7f3;color:#9d174d;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;">♀ Female</span>
+            {% else %}<span style="color:var(--text-muted);">—</span>{% endif %}
+          </td>
+          <td>
+            {% set s = st.enrollment_status or 'Enrolled' %}
+            <span class="status-badge status-{{ s|lower }}">{{ s }}</span>
+          </td>
+          <td style="text-align:right;">
+            <div style="display:flex;gap:6px;justify-content:flex-end;">
+              <button class="btn btn-secondary btn-sm" onclick="viewStudent({{ st.id }})">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                View
+              </button>
+              <button class="btn btn-secondary btn-sm" onclick="editStudent({{ st.id }})">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                Edit
+              </button>
+              <form id="del-student-{{ st.id }}" method="POST" action="{{ url_for('delete_student', sid=st.id) }}" style="display:inline;">
+                <button type="button" class="btn btn-danger btn-sm" onclick="confirmDelete('del-student-{{ st.id }}')">
+                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                  Delete
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div id="noResults" style="display:none;" class="empty-state" style="padding:40px;">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+    <h3>No students found</h3>
+    <p>Try adjusting your search or filters.</p>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zm0 2.27L20 9l-8 4.36L4 9l8-3.73zM5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82z"/></svg>
+    <h3>No students yet</h3>
+    <p>Click "Add Student" or "Bulk Import" to get started.</p>
+  </div>
+  {% endif %}
+
+  <!-- Pagination BOTTOM -->
+  <div class="pg-bar pg-bar-bottom" id="pgBottom" style="display:none;">
+    <div class="pg-info" id="pgInfoBottom"></div>
+    <div class="pg-controls" id="pgCtrlBottom"></div>
+  </div>
+
+</div>
+
+
+<!-- ── ADD STUDENT MODAL ── -->
+<div class="modal-overlay" id="addStudentModal">
+  <div class="modal" style="max-width:600px;">
+    <div class="modal-header">
+      <h3>Add New Student</h3>
+      <button class="modal-close" onclick="closeModal('addStudentModal')">×</button>
+    </div>
+    <form method="POST" action="{{ url_for('add_student') }}">
+      <div class="modal-body">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:12px;">Personal Information</div>
+        <div class="form-row">
+          <div class="form-group"><label>First Name *</label><input type="text" name="first_name" class="form-control" required></div>
+          <div class="form-group"><label>Last Name *</label><input type="text" name="last_name" class="form-control" required></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Middle Name</label><input type="text" name="middle_name" class="form-control"></div>
+          <div class="form-group"><label>Student ID *</label><input type="text" name="student_id" class="form-control" required></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Gender</label>
+            <select name="gender" class="form-control"><option value="">— Select —</option><option>Male</option><option>Female</option></select>
+          </div>
+          <div class="form-group"><label>Birthdate</label><input type="date" name="birthdate" class="form-control"></div>
+        </div>
+        <div class="form-group"><label>Address</label><input type="text" name="address" class="form-control"></div>
+        <div class="form-row">
+          <div class="form-group"><label>Contact No.</label><input type="text" name="contact_no" class="form-control"></div>
+          <div class="form-group"><label>Email</label><input type="email" name="email" class="form-control"></div>
+        </div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin:16px 0 12px;">Guardian / Parent</div>
+        <div class="form-row">
+          <div class="form-group"><label>Guardian Name</label><input type="text" name="guardian_name" class="form-control"></div>
+          <div class="form-group"><label>Guardian Contact</label><input type="text" name="guardian_contact" class="form-control"></div>
+        </div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin:16px 0 12px;">Academic</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Grade Level</label>
+            <select name="grade_level" class="form-control"><option value="">— Select —</option><option>Grade 7</option><option>Grade 8</option><option>Grade 9</option><option>Grade 10</option><option>Grade 11</option><option>Grade 12</option></select>
+          </div>
+          <div class="form-group">
+            <label>Enrollment Status</label>
+            <select name="enrollment_status" class="form-control"><option>Enrolled</option><option>Irregular</option><option>Dropped</option><option>Graduated</option></select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Section</label>
+            <select name="section_id" class="form-control"><option value="">— Select —</option>{% for sec in sections %}<option value="{{ sec.id }}">Grade {{ sec.grade_level }} – {{ sec.section_name }}</option>{% endfor %}</select>
+          </div>
+          <div class="form-group">
+            <label>Strand</label>
+            <select name="strand_id" class="form-control"><option value="">— Select —</option>{% for st in strands %}<option value="{{ st.id }}">{{ st.strand_code }} – {{ st.strand_name }}</option>{% endfor %}</select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('addStudentModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Student</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+
+<!-- ── EDIT STUDENT MODAL ── -->
+<div class="modal-overlay" id="editStudentModal">
+  <div class="modal" style="max-width:600px;">
+    <div class="modal-header">
+      <h3>Edit Student</h3>
+      <button class="modal-close" onclick="closeModal('editStudentModal')">×</button>
+    </div>
+    <form id="editStudentForm" method="POST" action="">
+      <div class="modal-body">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:12px;">Personal Information</div>
+        <div class="form-row">
+          <div class="form-group"><label>First Name</label><input type="text" id="e_first_name" name="first_name" class="form-control" required></div>
+          <div class="form-group"><label>Last Name</label><input type="text" id="e_last_name" name="last_name" class="form-control" required></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Middle Name</label><input type="text" id="e_middle_name" name="middle_name" class="form-control"></div>
+          <div class="form-group"><label>Student ID</label><input type="text" id="e_student_id" name="student_id" class="form-control" required></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Gender</label>
+            <select id="e_gender" name="gender" class="form-control"><option value="">— Select —</option><option>Male</option><option>Female</option></select>
+          </div>
+          <div class="form-group"><label>Birthdate</label><input type="date" id="e_birthdate" name="birthdate" class="form-control"></div>
+        </div>
+        <div class="form-group"><label>Address</label><input type="text" id="e_address" name="address" class="form-control"></div>
+        <div class="form-row">
+          <div class="form-group"><label>Contact No.</label><input type="text" id="e_contact_no" name="contact_no" class="form-control"></div>
+          <div class="form-group"><label>Email</label><input type="email" id="e_email" name="email" class="form-control"></div>
+        </div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin:16px 0 12px;">Guardian / Parent</div>
+        <div class="form-row">
+          <div class="form-group"><label>Guardian Name</label><input type="text" id="e_guardian_name" name="guardian_name" class="form-control"></div>
+          <div class="form-group"><label>Guardian Contact</label><input type="text" id="e_guardian_contact" name="guardian_contact" class="form-control"></div>
+        </div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin:16px 0 12px;">Academic</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Grade Level</label>
+            <select id="e_grade_level" name="grade_level" class="form-control"><option value="">— Select —</option><option>Grade 7</option><option>Grade 8</option><option>Grade 9</option><option>Grade 10</option><option>Grade 11</option><option>Grade 12</option></select>
+          </div>
+          <div class="form-group">
+            <label>Enrollment Status</label>
+            <select id="e_enrollment_status" name="enrollment_status" class="form-control"><option>Enrolled</option><option>Irregular</option><option>Dropped</option><option>Graduated</option></select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Section</label>
+            <select id="e_section_id" name="section_id" class="form-control"><option value="">— Select —</option>{% for sec in sections %}<option value="{{ sec.id }}">Grade {{ sec.grade_level }} – {{ sec.section_name }}</option>{% endfor %}</select>
+          </div>
+          <div class="form-group">
+            <label>Strand</label>
+            <select id="e_strand_id" name="strand_id" class="form-control"><option value="">— Select —</option>{% for st in strands %}<option value="{{ st.id }}">{{ st.strand_code }} – {{ st.strand_name }}</option>{% endfor %}</select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('editStudentModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+
+<!-- ── VIEW STUDENT MODAL ── -->
+<div class="modal-overlay" id="viewStudentModal">
+  <div class="modal" style="max-width:540px;">
+    <div class="modal-header">
+      <h3>Student Profile</h3>
+      <button class="modal-close" onclick="closeModal('viewStudentModal')">×</button>
+    </div>
+    <div class="modal-body" id="viewStudentBody">
+      <div style="text-align:center;padding:20px;color:var(--text-muted);">Loading…</div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal('viewStudentModal')">Close</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ── BULK IMPORT MODAL ── -->
+<div class="modal-overlay" id="bulkAddModal">
+  <div class="modal" style="max-width:620px;">
+    <div class="modal-header">
+      <h3>Bulk Import Students</h3>
+      <button class="modal-close" onclick="closeModal('bulkAddModal')">×</button>
+    </div>
+    <form method="POST" action="{{ url_for('bulk_add_students') }}">
+      <div class="modal-body">
+        <div class="csv-hint">
+          <strong>Required columns:</strong> <code>student_id, first_name, last_name</code><br>
+          <strong>Optional:</strong> <code>middle_name, gender, birthdate, address, contact_no, email, guardian_name, guardian_contact, grade_level, enrollment_status, strand_code</code><br>
+          For <code>strand_code</code>, use text like <code>STEM</code>, <code>ABM</code>. Duplicate <code>student_id</code> values are skipped.
+        </div>
+
+        <!-- File upload -->
+        <label class="csv-upload-zone" id="csvUploadZone" for="csvFileInput">
+          <svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;flex-shrink:0;"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+          <span id="csvFileLabel">Click to upload a .csv file, or drag and drop</span>
+        </label>
+        <input type="file" id="csvFileInput" accept=".csv,text/csv" style="display:none;">
+
+        <div class="csv-divider"><span>or paste CSV below</span></div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <label style="font-size:12px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;">CSV Data</label>
+          <div style="display:flex;gap:6px;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="downloadTemplate()">
+              <svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+              Template
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="loadSample()">Sample</button>
+          </div>
+        </div>
+        <textarea name="csv_data" id="csvData" class="bulk-csv-area" placeholder="Paste CSV here, including the header row…"></textarea>
+
+        <div id="csvPreview" style="margin-top:12px;display:none;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:6px;">
+            Preview — <span id="previewCount">0</span> row(s)
+          </div>
+          <div id="previewTable" style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-sm);"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('bulkAddModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Import Students</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+
+<!-- ── FLUSH STUDENTS MODAL ── -->
+<div class="modal-overlay" id="flushStudentsModal">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header" style="background:#fef2f2;border-bottom:1px solid #fecaca;">
+      <h3 style="color:#991b1b;">⚠ Flush Students</h3>
+      <button class="modal-close" onclick="closeModal('flushStudentsModal')">×</button>
+    </div>
+    <form method="POST" action="{{ url_for('flush_students_by_strand') }}" onsubmit="return confirmFlush(event)">
+      <div class="modal-body">
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:18px;">Permanently delete all students matching the selected filters. This <strong>cannot be undone</strong>. At least one filter is required.</p>
+        <div class="form-group">
+          <label>Strand</label>
+          <select name="strand_id" id="flush_strand_id" class="form-control" onchange="updateFlushPreview()">
+            <option value="">— All strands —</option>
+            {% for st in strands %}<option value="{{ st.id }}">{{ st.strand_code }} – {{ st.strand_name }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Grade Level</label>
+            <select name="grade_level" id="flush_grade" class="form-control" onchange="updateFlushPreview()">
+              <option value="">— All grades —</option>
+              {% for g in ['7','8','9','10','11','12'] %}<option value="Grade {{ g }}">Grade {{ g }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Enrollment Status</label>
+            <select name="enrollment_status" id="flush_status" class="form-control" onchange="updateFlushPreview()">
+              <option value="">— All statuses —</option>
+              <option>Enrolled</option><option>Irregular</option><option>Dropped</option><option>Graduated</option>
+            </select>
+          </div>
+        </div>
+        <div id="flush-preview" style="display:none;margin-top:6px;padding:12px 14px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;font-size:13px;color:#92400e;">
+          <strong><span id="flush-count">0</span> student(s)</strong> will be deleted.
+        </div>
+        <div id="flush-no-filter" style="margin-top:6px;padding:12px 14px;background:#f3f4f6;border:1px solid var(--border);border-radius:8px;font-size:13px;color:var(--text-muted);">
+          Select at least one filter to see how many students will be affected.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('flushStudentsModal')">Cancel</button>
+        <button type="submit" id="flush-submit-btn" class="btn btn-danger" disabled>
+          <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+          Delete Students
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+
+<!-- ── AUTO-ASSIGN SECTION MODAL ── -->
+<div class="modal-overlay" id="autoAssignModal">
+  <div class="modal" style="max-width:640px;">
+    <div class="modal-header">
+      <h3>Auto-Assign Section</h3>
+      <button class="modal-close" onclick="closeModal('autoAssignModal')">×</button>
+    </div>
+    <div class="modal-body" id="autoAssignBody">
+      <div id="aa-step1">
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:18px;">Choose a strand and/or grade level. The system will distribute all unassigned enrolled students into available sections.</p>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Strand</label>
+            <select id="aa_strand" class="form-control" onchange="loadAASections()">
+              <option value="">— Any strand —</option>
+              {% for st in strands %}<option value="{{ st.id }}">{{ st.strand_code }} – {{ st.strand_name }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Grade Level</label>
+            <select id="aa_grade" class="form-control" onchange="loadAASections()">
+              <option value="">— Any grade —</option>
+              {% for g in ['7','8','9','10','11','12'] %}<option value="Grade {{ g }}">Grade {{ g }}</option>{% endfor %}
+            </select>
+          </div>
+        </div>
+        <div id="aa-sections-wrap" style="margin-top:12px;display:none;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:8px;">Available Sections</div>
+          <div id="aa-sections-list"></div>
+        </div>
+        <div id="aa-no-sections" style="display:none;margin-top:12px;padding:12px;background:#fef3c7;border-radius:8px;font-size:13px;color:#92400e;">No sections found for the selected filters.</div>
+        <div id="aa-student-info" style="display:none;margin-top:14px;padding:12px 14px;background:var(--bg-page);border:1px solid var(--border);border-radius:8px;font-size:13px;">
+          <strong><span id="aa-student-count">0</span> unassigned enrolled student(s)</strong> match the selected filter and will be processed.
+        </div>
+        <div id="aa-no-students" style="display:none;margin-top:12px;padding:12px;background:#fef3c7;border-radius:8px;font-size:13px;color:#92400e;">No unassigned enrolled students match the selected filter.</div>
+      </div>
+      <div id="aa-step2" style="display:none;">
+        <div id="aa-result-summary" style="margin-bottom:16px;padding:14px;border-radius:8px;font-size:14px;font-weight:600;"></div>
+        <div id="aa-result-details" style="max-height:280px;overflow-y:auto;"></div>
+      </div>
+      <div id="aa-spinner" style="display:none;text-align:center;padding:32px;">
+        <div style="display:inline-block;width:34px;height:34px;border:3px solid var(--border);border-top-color:rgba(160,24,80,.8);border-radius:50%;animation:spin .7s linear infinite;"></div>
+        <p style="margin-top:12px;font-size:13px;color:var(--text-muted);">Assigning students…</p>
+      </div>
+    </div>
+    <div class="modal-footer" id="aa-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal('autoAssignModal')">Cancel</button>
+      <button type="button" class="btn btn-primary" id="aa-run-btn" onclick="runAutoAssign()" disabled>
+        <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+        Assign Now
+      </button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+
+{% block extra_js %}
+<script>
+'use strict';
+
+// ─── PAGINATION ───────────────────────────────────────────────
+const PG_SIZE = 50;
+let pgCurrent = 1;
+let pgRows    = [];   // current filtered+sorted rows
+
+function pgApply() {
+  const total  = pgRows.length;
+  const pages  = Math.max(1, Math.ceil(total / PG_SIZE));
+  if (pgCurrent > pages) pgCurrent = pages;
+  if (pgCurrent < 1)     pgCurrent = 1;
+
+  const start = (pgCurrent - 1) * PG_SIZE;
+  const end   = start + PG_SIZE;
+
+  // Hide all rows first, then show only this page's slice
+  document.querySelectorAll('.student-row').forEach(r => { r.style.display = 'none'; });
+  pgRows.forEach((row, i) => {
+    row.style.display = (i >= start && i < end) ? '' : 'none';
+    const c = row.querySelector('.row-num');
+    if (c) c.textContent = i + 1;
+  });
+
+  pgRenderBars(total, pages);
+}
+
+function pgRenderBars(total, pages) {
+  const s = total === 0 ? 0 : (pgCurrent - 1) * PG_SIZE + 1;
+  const e = Math.min(pgCurrent * PG_SIZE, total);
+  const info = total === 0
+    ? 'No students found'
+    : `Showing <strong>${s}–${e}</strong> of <strong>${total}</strong> student${total !== 1 ? 's' : ''}`;
+  const ctrl = pgBuildControls(pages);
+  const show = !(pages <= 1 && total <= PG_SIZE);
+
+  ['Top','Bottom'].forEach(pos => {
+    document.getElementById('pgInfo'  + pos).innerHTML = info;
+    document.getElementById('pgCtrl' + pos).innerHTML  = ctrl;
+    document.getElementById('pg'     + pos).style.display = show ? '' : 'none';
+  });
+}
+
+function pgBuildControls(pages) {
+  if (pages <= 1) return '';
+  const p = pgCurrent;
+  let h = '';
+  h += `<button class="pg-btn" onclick="pgGo(${p-1})" ${p===1?'disabled':''}>
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+  </button>`;
+  let prev = null;
+  pgRange(p, pages).forEach(n => {
+    if (prev !== null && n - prev > 1) h += `<span class="pg-dots">…</span>`;
+    h += `<button class="pg-btn${n===p?' active':''}" onclick="pgGo(${n})">${n}</button>`;
+    prev = n;
+  });
+  h += `<button class="pg-btn" onclick="pgGo(${p+1})" ${p===pages?'disabled':''}>
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+  </button>`;
+  return h;
+}
+
+function pgRange(cur, total) {
+  const s = new Set([1, total]);
+  for (let i = Math.max(1,cur-1); i <= Math.min(total,cur+1); i++) s.add(i);
+  return [...s].sort((a,b)=>a-b);
+}
+
+function pgGo(page) {
+  const pages = Math.ceil(pgRows.length / PG_SIZE) || 1;
+  if (page < 1 || page > pages) return;
+  pgCurrent = page;
+  pgApply();
+  document.getElementById('studentTable')?.scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+// ─── FILTER ───────────────────────────────────────────────────
+function filterTable() {
+  const q  = document.getElementById('searchInput').value.toLowerCase();
+  const sc = document.getElementById('filterSection').value;
+  const st = document.getElementById('filterStatus').value;
+  const gr = document.getElementById('filterGrade').value;
+  const gn = document.getElementById('filterGender').value;
+
+  pgRows = Array.from(document.querySelectorAll('.student-row')).filter(row => {
+    if (q  && !row.dataset.name.includes(q) && !row.dataset.id.includes(q)) return false;
+    if (sc && row.dataset.section !== sc) return false;
+    if (st && row.dataset.status  !== st) return false;
+    if (gr && row.dataset.grade   !== gr) return false;
+    if (gn && row.dataset.gender.toLowerCase() !== gn.toLowerCase()) return false;
+    return true;
+  });
+
+  const nr = document.getElementById('noResults');
+  if (nr) nr.style.display = pgRows.length === 0 ? 'block' : 'none';
+
+  pgCurrent = 1;
+  pgApply();
+}
+
+// ─── SORT ─────────────────────────────────────────────────────
+let sortCol = null, sortAsc = true;
+function sortTable(col) {
+  if (sortCol === col) sortAsc = !sortAsc; else { sortCol = col; sortAsc = true; }
+  const tbody = document.getElementById('studentTbody');
+  const rows  = Array.from(tbody.querySelectorAll('.student-row'));
+  rows.sort((a,b) => {
+    const va = (a.dataset[col]||'').toLowerCase();
+    const vb = (b.dataset[col]||'').toLowerCase();
+    return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+  });
+  rows.forEach(r => tbody.appendChild(r));
+  ['name','id','grade','section','gender','status'].forEach(c => {
+    const el = document.getElementById('si_' + c);
+    if (el) el.textContent = c === col ? (sortAsc ? '↑' : '↓') : '↕';
+  });
+  pgCurrent = 1;
+  filterTable();
+}
+
+// ─── FLUSH PREVIEW ────────────────────────────────────────────
+function updateFlushPreview() {
+  const sid  = document.getElementById('flush_strand_id').value;
+  const gr   = document.getElementById('flush_grade').value;
+  const stt  = document.getElementById('flush_status').value;
+  const prev = document.getElementById('flush-preview');
+  const nofi = document.getElementById('flush-no-filter');
+  const btn  = document.getElementById('flush-submit-btn');
+  if (!sid && !gr && !stt) { prev.style.display='none'; nofi.style.display=''; btn.disabled=true; return; }
+  let count = 0;
+  document.querySelectorAll('.student-row').forEach(row => {
+    const ms = !sid || row.dataset.strandId === sid;
+    const mg = !gr  || row.dataset.grade    === gr;
+    const mt = !stt || row.dataset.status   === stt;
+    if (ms && mg && mt) count++;
+  });
+  document.getElementById('flush-count').textContent = count;
+  prev.style.display = ''; nofi.style.display = 'none'; btn.disabled = count === 0;
+}
+function confirmFlush(e) {
+  const c = document.getElementById('flush-count').textContent;
+  if (!confirm(`Permanently delete ${c} student(s)? This cannot be undone.`)) { e.preventDefault(); return false; }
+  return true;
+}
+
+// ─── ADD MODAL ────────────────────────────────────────────────
+function openAddModal() {
+  document.getElementById('addStudentModal').querySelector('form').reset();
+  openModal('addStudentModal');
+}
+
+// ─── VIEW MODAL ───────────────────────────────────────────────
+async function viewStudent(id) {
+  openModal('viewStudentModal');
+  const body = document.getElementById('viewStudentBody');
+  body.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Loading…</div>';
+  try {
+    const s = await fetch(`/students/get/${id}`).then(r=>r.json());
+    const row = (label, val) => val
+      ? `<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid var(--border);">
+           <div style="width:140px;font-size:12px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.3px;flex-shrink:0;">${label}</div>
+           <div style="font-size:13px;color:var(--text-primary);">${val}</div>
+         </div>` : '';
+    const sc = {Enrolled:'status-enrolled',Irregular:'status-irregular',Dropped:'status-dropped',Graduated:'status-graduated'}[s.enrollment_status]||'status-enrolled';
+    body.innerHTML = `
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;">
+        <div style="width:56px;height:56px;border-radius:50%;background:var(--brand-gradient);display:flex;align-items:center;justify-content:center;color:white;font-size:20px;font-weight:800;flex-shrink:0;">
+          ${s.first_name[0].toUpperCase()}${s.last_name[0].toUpperCase()}
+        </div>
+        <div>
+          <div style="font-size:17px;font-weight:800;color:var(--text-primary);letter-spacing:-.3px;">${s.last_name}, ${s.first_name}${s.middle_name?' '+s.middle_name:''}</div>
+          <div style="margin-top:4px;"><span class="badge badge-section">${s.student_id}</span>&nbsp;<span class="status-badge ${sc}">${s.enrollment_status||'Enrolled'}</span></div>
+        </div>
+      </div>
+      ${row('Gender',s.gender)}${row('Birthdate',s.birthdate)}${row('Grade Level',s.grade_level)}
+      ${row('Section',s.section_name)}${row('Strand',s.strand_code?`${s.strand_code} – ${s.strand_name}`:null)}
+      ${row('Contact No.',s.contact_no)}${row('Email',s.email)}${row('Address',s.address)}
+      ${row('Guardian',s.guardian_name)}${row('Guardian Contact',s.guardian_contact)}`;
+  } catch(_) { body.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Could not load student data.</div>'; }
+}
+
+// ─── EDIT MODAL ───────────────────────────────────────────────
+async function editStudent(id) {
+  try {
+    const s = await fetch(`/students/get/${id}`).then(r=>r.json());
+    document.getElementById('editStudentForm').action = `/students/edit/${id}`;
+    const set = (eid,val) => { const el=document.getElementById(eid); if(el) el.value=val||''; };
+    set('e_first_name',s.first_name); set('e_last_name',s.last_name); set('e_middle_name',s.middle_name);
+    set('e_student_id',s.student_id); set('e_gender',s.gender); set('e_birthdate',s.birthdate);
+    set('e_address',s.address); set('e_contact_no',s.contact_no); set('e_email',s.email);
+    set('e_guardian_name',s.guardian_name); set('e_guardian_contact',s.guardian_contact);
+    set('e_grade_level',s.grade_level); set('e_enrollment_status',s.enrollment_status);
+    set('e_section_id',s.section_id); set('e_strand_id',s.strand_id);
+    openModal('editStudentModal');
+  } catch(_) {}
+}
+
+// ─── CSV FILE UPLOAD ──────────────────────────────────────────
+function initCSVUpload() {
+  const input = document.getElementById('csvFileInput');
+  const zone  = document.getElementById('csvUploadZone');
+  const label = document.getElementById('csvFileLabel');
+  if (!input) return;
+
+  input.addEventListener('change', function() {
+    const file = this.files[0];
+    if (!file) return;
+    label.textContent = file.name;
+    zone.classList.add('has-file');
+    const reader = new FileReader();
+    reader.onload = e => {
+      document.getElementById('csvData').value = e.target.result;
+      previewCSV();
+    };
+    reader.readAsText(file);
+  });
+
+  // Drag and drop
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.style.borderColor='rgba(160,24,80,.5)'; });
+  zone.addEventListener('dragleave', () => { zone.style.borderColor=''; });
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.style.borderColor='';
+    const file = e.dataTransfer.files[0];
+    if (!file || !file.name.endsWith('.csv')) { alert('Please drop a .csv file.'); return; }
+    label.textContent = file.name;
+    zone.classList.add('has-file');
+    const reader = new FileReader();
+    reader.onload = ev => { document.getElementById('csvData').value = ev.target.result; previewCSV(); };
+    reader.readAsText(file);
+  });
+
+  document.getElementById('csvData').addEventListener('input', previewCSV);
+}
+
+// ─── CSV PREVIEW ──────────────────────────────────────────────
+const SAMPLE_CSV = `student_id,first_name,last_name,middle_name,gender,grade_level,enrollment_status,strand_code
+2024-00001,Juan,Dela Cruz,Santos,Male,Grade 11,Enrolled,STEM
+2024-00002,Maria,Reyes,Lopez,Female,Grade 11,Enrolled,ABM
+2024-00003,Jose,Manalo,,Male,Grade 12,Enrolled,HUMSS`;
+
+function loadSample() {
+  document.getElementById('csvData').value = SAMPLE_CSV;
+  previewCSV();
+}
+
+function previewCSV() {
+  const raw  = document.getElementById('csvData').value.trim();
+  const wrap = document.getElementById('csvPreview');
+  const tbl  = document.getElementById('previewTable');
+  if (!raw) { wrap.style.display='none'; return; }
+  const lines = raw.split('\n').filter(l=>l.trim());
+  if (lines.length < 2) { wrap.style.display='none'; return; }
+  const headers = lines[0].split(',').map(h=>h.trim());
+  const rows    = lines.slice(1,6);
+  document.getElementById('previewCount').textContent = lines.length - 1;
+  let html = '<table class="data-table"><thead><tr>';
+  headers.forEach(h => { html += `<th>${h}</th>`; });
+  html += '</tr></thead><tbody>';
+  rows.forEach(line => {
+    html += '<tr>';
+    line.split(',').forEach(c => { html += `<td style="font-size:12px;">${c.trim()}</td>`; });
+    html += '</tr>';
+  });
+  if (lines.length - 1 > 5) html += `<tr><td colspan="${headers.length}" style="text-align:center;color:var(--text-muted);font-size:12px;padding:8px;">… and ${lines.length-6} more row(s)</td></tr>`;
+  html += '</tbody></table>';
+  tbl.innerHTML = html;
+  wrap.style.display = 'block';
+}
+
+// ─── DOWNLOAD TEMPLATE ────────────────────────────────────────
+function downloadTemplate() {
+  const csv = 'student_id,first_name,last_name,middle_name,gender,birthdate,address,contact_no,email,guardian_name,guardian_contact,grade_level,enrollment_status,strand_code\n2024-00001,Juan,Dela Cruz,Santos,Male,2008-05-12,123 Main St,09171234567,juan@email.com,Maria Dela Cruz,09181234567,Grade 11,Enrolled,STEM';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download = 'students_import_template.csv';
+  a.click();
+}
+
+// ─── EXPORT CSV ───────────────────────────────────────────────
+function exportCSV() {
+  const target = pgRows.length > 0 ? pgRows : Array.from(document.querySelectorAll('.student-row'));
+  if (!target.length) { alert('No students to export.'); return; }
+  const header = 'student_id,last_name,first_name,middle_name,grade_level,section,strand,gender,enrollment_status';
+  const lines  = [header];
+  target.forEach(row => {
+    const sid    = row.querySelector('.badge.badge-section')?.textContent?.trim() || '';
+    const nameTd = row.querySelectorAll('td')[1];
+    const full   = nameTd?.querySelector('[style*="font-weight:600"]')?.textContent?.trim() || '';
+    const parts  = full.split(',');
+    const last   = parts[0]?.trim() || '';
+    const rest   = (parts[1]||'').trim().split(' ');
+    const first  = rest[0] || '';
+    const mid    = rest[1] ? rest[1].replace('.','') : '';
+    const esc = v => `"${(v||'').replace(/"/g,'""')}"`;
+    lines.push([
+      esc(sid), esc(last), esc(first), esc(mid),
+      esc(row.dataset.grade), esc(row.dataset.section),
+      esc(row.querySelectorAll('td')[5]?.querySelector('.badge')?.textContent?.trim()||''),
+      esc(row.dataset.gender), esc(row.dataset.status)
+    ].join(','));
+  });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/csv'}));
+  a.download = `students_export_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+
+// ─── AUTO-ASSIGN ─────────────────────────────────────────────
+let aaSections = [], aaStudentCount = 0;
+
+function openAutoAssignModal() {
+  document.getElementById('aa-step1').style.display   = '';
+  document.getElementById('aa-step2').style.display   = 'none';
+  document.getElementById('aa-spinner').style.display = 'none';
+  document.getElementById('aa-sections-wrap').style.display = 'none';
+  document.getElementById('aa-no-sections').style.display   = 'none';
+  document.getElementById('aa-student-info').style.display  = 'none';
+  document.getElementById('aa-no-students').style.display   = 'none';
+  document.getElementById('aa-footer').style.display = '';
+  document.getElementById('aa-footer').innerHTML = `
+    <button type="button" class="btn btn-secondary" onclick="closeModal('autoAssignModal')">Cancel</button>
+    <button type="button" class="btn btn-primary" id="aa-run-btn" onclick="runAutoAssign()" disabled>
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+      Assign Now
+    </button>`;
+  document.getElementById('aa_strand').value = '';
+  document.getElementById('aa_grade').value  = '';
+  aaSections = []; aaStudentCount = 0;
+  openModal('autoAssignModal');
+}
+
+async function loadAASections() {
+  const sid = document.getElementById('aa_strand').value;
+  const gr  = document.getElementById('aa_grade').value;
+  if (!sid && !gr) {
+    ['aa-sections-wrap','aa-no-sections','aa-student-info','aa-no-students'].forEach(id => document.getElementById(id).style.display='none');
+    const b = document.getElementById('aa-run-btn'); if(b) b.disabled=true;
+    return;
+  }
+  let url = '/api/sections/by_strand?';
+  if (sid) url += `strand_id=${sid}&`;
+  if (gr)  url += `grade_level=${encodeURIComponent(gr)}`;
+  try {
+    aaSections = await fetch(url).then(r=>r.json());
+    renderAASections(aaSections);
+    countAAStudents(sid, gr);
+  } catch(_) {}
+}
+
+function renderAASections(sections) {
+  const wrap=document.getElementById('aa-sections-wrap'), list=document.getElementById('aa-sections-list'),
+        none=document.getElementById('aa-no-sections'), btn=document.getElementById('aa-run-btn');
+  if (!sections.length) { wrap.style.display='none'; none.style.display=''; if(btn) btn.disabled=true; return; }
+  none.style.display='none'; wrap.style.display='';
+  if(btn) btn.disabled = !sections.some(s=>s.available>0) || aaStudentCount===0;
+  list.innerHTML = sections.map(sec => {
+    const pct=Math.min(100,Math.round((sec.student_count/sec.student_limit)*100)),full=sec.available===0,
+          bc=full?'#ef4444':pct>=80?'#f59e0b':'#10b981';
+    return `<div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:${full?'#fafafa':'white'};opacity:${full?.6:1};">
+      <div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:600;">Grade ${sec.grade_level} — ${sec.section_name}</div>${sec.adviser?`<div style="font-size:11px;color:var(--text-muted);">Adviser: ${sec.adviser}</div>`:''}</div>
+      <div style="text-align:right;min-width:100px;flex-shrink:0;">
+        <div style="font-size:12px;font-weight:700;color:${bc};">${sec.student_count} / ${sec.student_limit}</div>
+        <div style="height:5px;border-radius:3px;background:#e5e7eb;margin-top:4px;"><div style="height:100%;border-radius:3px;width:${pct}%;background:${bc};"></div></div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:3px;">${full?'Full':sec.available+' slot'+(sec.available!==1?'s':'')+' open'}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function countAAStudents(sid, grade) {
+  let count = 0;
+  document.querySelectorAll('.student-row').forEach(row => {
+    if ((!row.dataset.section||row.dataset.section==='') && row.dataset.status==='Enrolled' && (!grade||row.dataset.grade===grade)) count++;
+  });
+  aaStudentCount = count;
+  document.getElementById('aa-student-count').textContent = count;
+  const info=document.getElementById('aa-student-info'), noS=document.getElementById('aa-no-students'), btn=document.getElementById('aa-run-btn');
+  if (count>0) { info.style.display=''; noS.style.display='none'; } else { info.style.display='none'; noS.style.display=''; if(btn) btn.disabled=true; return; }
+  if(btn) btn.disabled = !(aaSections.some(s=>s.available>0) && count>0);
+}
+
+async function runAutoAssign() {
+  const sid = document.getElementById('aa_strand').value||null;
+  const gr  = document.getElementById('aa_grade').value||null;
+  document.getElementById('aa-step1').style.display='none';
+  document.getElementById('aa-spinner').style.display='';
+  document.getElementById('aa-footer').style.display='none';
+  try {
+    const data = await fetch('/students/auto_assign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strand_id:sid?+sid:null,grade_level:gr})}).then(r=>r.json());
+    document.getElementById('aa-spinner').style.display='none';
+    document.getElementById('aa-step2').style.display='';
+    const sum=document.getElementById('aa-result-summary');
+    sum.style.cssText=`background:${data.assigned>0?'#d1fae5':'#fef3c7'};color:${data.assigned>0?'#065f46':'#92400e'};padding:14px 16px;border-radius:8px;`;
+    sum.textContent = data.message||`${data.assigned} assigned, ${data.skipped} skipped.`;
+    const det=document.getElementById('aa-result-details');
+    det.innerHTML = data.details?.length
+      ? `<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="background:var(--bg-page);"><th style="text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);">Student</th><th style="text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);">Result</th></tr></thead><tbody>${data.details.map(d=>`<tr style="border-top:1px solid var(--border);"><td style="padding:7px 10px;">${d.name}</td><td style="padding:7px 10px;">${d.status==='assigned'?`<span style="color:#065f46;font-weight:600;">✓ ${d.section}</span>`:`<span style="color:#991b1b;">✗ ${d.reason||'Skipped'}</span>`}</td></tr>`).join('')}</tbody></table>`
+      : '<p style="font-size:13px;color:var(--text-muted);text-align:center;padding:16px;">No students were processed.</p>';
+    document.getElementById('aa-footer').innerHTML=`<button type="button" class="btn btn-secondary" onclick="closeModal('autoAssignModal')">Close</button>${data.assigned>0?`<button type="button" class="btn btn-primary" onclick="location.reload()">Reload Page</button>`:''}`;
+    document.getElementById('aa-footer').style.display='';
+  } catch(_) {
+    document.getElementById('aa-spinner').style.display='none';
+    document.getElementById('aa-step1').style.display='';
+    document.getElementById('aa-footer').style.display='';
+    alert('An error occurred. Please try again.');
+  }
+}
+
+// ─── INIT ─────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', function() {
+  // Wire up filter controls
+  document.getElementById('searchInput').addEventListener('input', filterTable);
+  document.getElementById('filterSection').addEventListener('change', filterTable);
+  document.getElementById('filterGender').addEventListener('change', filterTable);
+  document.getElementById('filterStatus').addEventListener('change', filterTable);
+  document.getElementById('filterGrade').addEventListener('change', filterTable);
+
+  // Init CSV upload
+  initCSVUpload();
+
+  // Run initial pagination
+  filterTable();
+});
+</script>
+{% endblock %}

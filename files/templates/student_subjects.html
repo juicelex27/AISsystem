@@ -1,0 +1,272 @@
+{% extends "portal_layout.html" %}
+{% block title %}My Subjects{% endblock %}
+{% block page_title %}My Subjects{% endblock %}
+{% block page_subtitle %}{{ student.section_name or 'No section assigned' }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.sem-tabs { display:flex; gap:0; border-bottom:2px solid var(--border); margin-bottom:24px; }
+.sem-tab-btn {
+  padding:12px 28px; font-size:12px; font-weight:800; cursor:pointer;
+  border:none; background:none; color:var(--text-muted);
+  letter-spacing:.6px; text-transform:uppercase;
+  border-bottom:3px solid transparent; margin-bottom:-2px;
+  transition:all .15s; white-space:nowrap;
+}
+.sem-tab-btn.active { color:rgba(160,24,80,1); border-bottom-color:rgba(160,24,80,1); }
+.sem-tab-btn:hover:not(.active) { color:var(--text-primary); background:#f9fafb; }
+
+.subjects-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:20px; }
+.sem-panel { display:none; }
+.sem-panel.active { display:grid; }
+.empty-sem { grid-column:1/-1; text-align:center; padding:48px 0; color:var(--text-muted); font-size:13px; }
+
+.subject-card {
+  border-radius:14px; overflow:hidden; box-shadow:var(--shadow-md);
+  cursor:pointer; transition:transform .15s, box-shadow .15s;
+  background:none; border:none; text-align:left; display:block; width:100%;
+}
+.subject-card:hover { transform:translateY(-3px); box-shadow:var(--shadow-lg); }
+.card-top { padding:22px 20px 52px; position:relative; min-height:120px; }
+.card-badge { font-size:9px; font-weight:800; text-transform:uppercase;
+  letter-spacing:.8px; color:rgba(255,255,255,.65); margin-bottom:8px; }
+.card-code  { font-size:24px; font-weight:900; color:#fff; letter-spacing:-.5px; line-height:1.1; }
+.card-avatar {
+  position:absolute; bottom:-22px; right:18px;
+  width:48px; height:48px; border-radius:50%;
+  background:rgba(255,255,255,.2); border:3px solid rgba(255,255,255,.4);
+  display:flex; align-items:center; justify-content:center;
+  font-size:20px; font-weight:800; color:#fff;
+}
+.card-bottom { background:#fff; padding:30px 18px 16px; }
+.card-desc-lbl { font-size:9px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.6px; color:var(--text-muted); margin-bottom:3px; }
+.card-desc-val { font-size:13px; font-weight:600; color:var(--text-primary);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.card-meta { display:flex; gap:10px; margin-top:10px; flex-wrap:wrap; }
+.card-meta-item { font-size:11px; color:var(--text-muted); }
+
+.stats-bar { display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; }
+.stat-chip { padding:5px 14px; border-radius:99px; font-size:12px; font-weight:600;
+  background:#f1f5f9; color:#374151; border:1px solid #e2e8f0; }
+
+/* ── Modal ── */
+.sub-modal-overlay {
+  display:none; position:fixed; inset:0; background:rgba(0,0,0,.55);
+  z-index:9999; align-items:center; justify-content:center; padding:20px;
+}
+.sub-modal-overlay.open { display:flex; }
+.sub-modal {
+  background:#fff; border-radius:16px; box-shadow:0 24px 60px rgba(0,0,0,.25);
+  width:100%; max-width:480px; overflow:hidden; max-height:90vh; overflow-y:auto;
+  animation:slideUp .2s ease;
+}
+@keyframes slideUp { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+.modal-banner { padding:28px 24px 44px; position:relative; }
+.modal-close {
+  position:absolute; top:12px; right:14px; width:28px; height:28px;
+  border-radius:50%; background:rgba(0,0,0,.2); border:none; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+}
+.modal-close svg { width:14px; height:14px; fill:white; }
+.modal-banner-badge { font-size:10px;font-weight:800;text-transform:uppercase;
+  letter-spacing:.7px;color:rgba(255,255,255,.65);margin-bottom:6px; }
+.modal-banner-code { font-size:26px;font-weight:900;color:#fff;letter-spacing:-.5px; }
+.modal-banner-name { font-size:13px;color:rgba(255,255,255,.8);margin-top:4px; }
+.modal-body { padding:20px 24px 24px; }
+.modal-sec-title { font-size:10px;font-weight:800;text-transform:uppercase;
+  letter-spacing:.5px;color:var(--text-muted);margin-bottom:10px;margin-top:18px; }
+.modal-sec-title:first-child { margin-top:0; }
+.teacher-row { display:flex;align-items:center;gap:14px; }
+.teacher-av { width:52px;height:52px;border-radius:50%;background:var(--brand-gradient);
+  color:#fff;display:flex;align-items:center;justify-content:center;
+  font-size:18px;font-weight:800;flex-shrink:0; }
+.teacher-name { font-size:15px;font-weight:800;color:var(--text-primary); }
+.teacher-email { font-size:12px;color:var(--text-muted);margin-top:2px; }
+.sched-row { display:flex;flex-wrap:wrap;gap:8px; }
+.sched-pill { display:inline-flex;align-items:center;gap:6px;padding:7px 14px;
+  border-radius:10px;font-size:12px;font-weight:600;background:#eff6ff;
+  color:#1e40af;border:1px solid #bfdbfe; }
+.info-row2 { font-size:13px;color:var(--text-secondary);line-height:1.9; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- Subject data embedded for JS -->
+<script>
+const SDATA = {
+{% for c in cards %}{% set s = c.sub %}
+  {{ s.id }}: {
+    code:  {{ s.subject_code | tojson }},
+    name:  {{ s.subject_name | tojson }},
+    sem:   {{ (s.semester or '') | tojson }},
+    color: {{ c.color | tojson }},
+    teachers: [
+      {% for t in s.teachers %}
+      {
+        name: {{ (t.first_name ~ ' ' ~ t.last_name) | tojson }},
+        initials: {{ t.initials | tojson }},
+        email: {{ (t.email or '') | tojson }},
+        schedules: [{% for sc in t.schedules %}{ day:{{ sc.day|tojson }},t_start:{{ sc.time_start|tojson }},t_end:{{ sc.time_end|tojson }},room:{{ (sc.room or '')|tojson }} },{% endfor %}],
+      },
+      {% endfor %}
+    ],
+  },
+{% endfor %}
+};
+</script>
+
+{% if not cards %}
+<div class="content-card">
+  <div class="empty-state">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+    <h3>No subjects found</h3>
+    <p>Your subjects will appear here once your section has a schedule.</p>
+  </div>
+</div>
+{% else %}
+
+{% set sem1 = cards | selectattr("sub.semester","equalto","1st Semester") | list %}
+{% set sem2 = cards | selectattr("sub.semester","equalto","2nd Semester") | list %}
+{% set wy   = cards | selectattr("sub.semester","equalto","Whole Year") | list %}
+{% set na   = cards | rejectattr("sub.semester","in",["1st Semester","2nd Semester","Whole Year"]) | list %}
+
+<div class="stats-bar">
+  <span class="stat-chip">📚 {{ cards|length }} Subject{{ 's' if cards|length != 1 else '' }}</span>
+</div>
+
+<div class="sem-tabs">
+  <button class="sem-tab-btn active" data-sem="1st_Semester" onclick="switchSem('1st_Semester',this)">First Semester</button>
+  <button class="sem-tab-btn"        data-sem="2nd_Semester" onclick="switchSem('2nd_Semester',this)">Second Semester</button>
+  <button class="sem-tab-btn"        data-sem="Whole_Year"   onclick="switchSem('Whole_Year',this)">Whole Year</button>
+</div>
+
+{% macro render_card(c) %}{% set s = c.sub %}
+<button class="subject-card" onclick="openSubModal({{ s.id }})">
+  <div class="card-top" style="background:{{ c.color }};">
+    <div class="card-badge">Course No.</div>
+    <div class="card-code">{{ s.subject_code }}</div>
+    <div class="card-avatar">{{ c.initials }}</div>
+  </div>
+  <div class="card-bottom">
+    <div class="card-desc-lbl">Description</div>
+    <div class="card-desc-val">{{ s.subject_name }}</div>
+    <div class="card-meta">
+      {% if s.teachers %}
+      <span class="card-meta-item">{{ s.teachers[0].first_name }} {{ s.teachers[0].last_name }}{% if s.teachers|length > 1 %} +{{ s.teachers|length - 1 }} more{% endif %}</span>
+      {% endif %}
+      {% if s.semester == 'Whole Year' %}<span class="card-meta-item" style="color:#b45309;font-weight:600;">Whole Year</span>{% endif %}
+    </div>
+  </div>
+</button>
+{% endmacro %}
+
+<!-- 1st Semester (+ Whole Year) -->
+<div class="sem-panel subjects-grid active" id="panel_1st_Semester">
+  {% set p1 = sem1 + wy + na %}
+  {% if p1 %}{% for c in p1 %}{{ render_card(c) }}{% endfor %}
+  {% else %}<div class="empty-sem">No subjects for 1st Semester</div>{% endif %}
+</div>
+
+<!-- 2nd Semester (+ Whole Year) -->
+<div class="sem-panel subjects-grid" id="panel_2nd_Semester">
+  {% set p2 = sem2 + wy + na %}
+  {% if p2 %}{% for c in p2 %}{{ render_card(c) }}{% endfor %}
+  {% else %}<div class="empty-sem">No subjects for 2nd Semester</div>{% endif %}
+</div>
+
+<!-- Whole Year -->
+<div class="sem-panel subjects-grid" id="panel_Whole_Year">
+  {% set pwy = wy + na %}
+  {% if pwy %}{% for c in pwy %}{{ render_card(c) }}{% endfor %}
+  {% else %}<div class="empty-sem">No whole year subjects</div>{% endif %}
+</div>
+
+{% endif %}
+
+<!-- Modal -->
+<div class="sub-modal-overlay" id="subModal">
+  <div class="sub-modal" id="subModalBox">
+    <div class="modal-banner" id="mBanner">
+      <button class="modal-close" onclick="closeSubModal()">
+        <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+      <div class="modal-banner-badge">Course No.</div>
+      <div class="modal-banner-code" id="mCode"></div>
+      <div class="modal-banner-name" id="mName"></div>
+    </div>
+    <div class="modal-body">
+      <div class="modal-sec-title">Teacher(s) &amp; Schedule</div>
+      <div id="mTeacherBody"></div>
+      <div class="modal-sec-title">Subject Info</div>
+      <div class="info-row2" id="mInfo"></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function switchSem(sem, btn) {
+  document.querySelectorAll('.sem-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.sem-tab-btn').forEach(b => b.classList.remove('active'));
+  const panel = document.getElementById('panel_' + sem);
+  if (panel) panel.classList.add('active');
+  if (btn) btn.classList.add('active');
+}
+
+function openSubModal(id) {
+  const s = SDATA[id];
+  if (!s) return;
+  document.getElementById('mBanner').style.background = s.color;
+  document.getElementById('mCode').textContent   = s.code;
+  document.getElementById('mName').textContent   = s.name;
+
+  // Teachers section
+  let teachersHtml = '';
+  if (s.teachers && s.teachers.length) {
+    s.teachers.forEach(t => {
+      let schedHtml = '';
+      if (t.schedules && t.schedules.length) {
+        t.schedules.forEach(sc => {
+          schedHtml += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px;">`;
+          if (sc.day)     schedHtml += `<span class="sched-pill">📆 ${sc.day}</span>`;
+          if (sc.t_start) schedHtml += `<span class="sched-pill">🕐 ${sc.t_start} – ${sc.t_end}</span>`;
+          if (sc.room)    schedHtml += `<span class="sched-pill">📍 ${sc.room}</span>`;
+          schedHtml += `</div>`;
+        });
+      }
+      teachersHtml += `
+        <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:14px;">
+          <div class="teacher-av" style="flex-shrink:0;">${t.initials}</div>
+          <div style="flex:1;">
+            <div class="teacher-name">${t.name}</div>
+            ${t.email ? `<div class="teacher-email">${t.email}</div>` : ''}
+            <div style="margin-top:6px;">${schedHtml || '<span style="color:var(--text-muted);font-size:12px;">No schedule</span>'}</div>
+          </div>
+        </div>`;
+    });
+  }
+  document.getElementById('mTeacherBody').innerHTML = teachersHtml || '<span style="color:var(--text-muted);">No teacher assigned</span>';
+
+  document.getElementById('mInfo').innerHTML = `<b>Semester:</b> ${s.sem || '—'}`;
+
+  document.getElementById('subModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeSubModal() {
+  document.getElementById('subModal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+document.getElementById('subModal').addEventListener('click', function(e) {
+  if (e.target === this) closeSubModal();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeSubModal();
+});
+</script>
+{% endblock %}

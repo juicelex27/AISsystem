@@ -1,0 +1,705 @@
+{% extends "layout.html" %}
+
+{% block title %}Schedule — {{ teacher.first_name }} {{ teacher.last_name }}{% endblock %}
+{% block page_title %}{{ teacher.first_name }} {{ teacher.last_name }}{% endblock %}
+{% block page_subtitle %}Teaching Schedule{% endblock %}
+
+{% block header_actions %}
+  <button class="btn btn-primary" onclick="openAddScheduleModal()">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+    Add Schedule
+  </button>
+  <a href="{{ url_for('teachers') }}" class="btn btn-secondary">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+    Back to Teachers
+  </a>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+.teacher-profile {
+  display: flex; align-items: center; gap: 16px;
+}
+.teacher-avatar-lg {
+  width: 56px; height: 56px; border-radius: 50%;
+  background: var(--brand-gradient); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; font-weight: 800; flex-shrink: 0;
+  box-shadow: var(--shadow-sm);
+}
+.sem-tab {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 14px; border-radius: 99px; font-size: 12px; font-weight: 600;
+  border: 1.5px solid var(--border); background: transparent;
+  color: var(--text-secondary); cursor: pointer; transition: all .15s;
+}
+.sem-tab:hover { border-color: rgba(160,24,80,.4); color: rgba(160,24,80,1); }
+.sem-tab.active {
+  background: var(--brand-gradient); border-color: transparent;
+  color: #fff; box-shadow: 0 2px 8px rgba(160,24,80,.25);
+}
+.sem-tab .sc {
+  background: rgba(255,255,255,.25); border-radius: 99px;
+  padding: 0 6px; font-size: 10px; font-weight: 700; line-height: 1.6;
+}
+.sem-tab:not(.active) .sc { background: var(--bg-page); color: var(--text-muted); }
+
+/* Day chips */
+.day-chip {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 13px; font-weight: 500;
+  transition: border-color .15s, background .15s; user-select: none;
+}
+.day-chip.selected {
+  border-color: rgba(160,24,80,.6);
+  background: rgba(160,24,80,.07);
+  color: rgba(160,24,80,1);
+  font-weight: 700;
+}
+
+/* Conflict panel */
+@keyframes spin { to { transform: rotate(360deg); } }
+.required-star { color: #ef4444; font-size: 13px; }
+#conflictPanel .chip {
+  display:flex; gap:8px; align-items:flex-start; padding:8px 10px;
+  border-radius:8px; font-size:12px; line-height:1.5;
+}
+#conflictPanel .chip-section { background:#fef2f2; }
+#conflictPanel .chip-teacher { background:#fff7ed; }
+#conflictPanel .chip-room    { background:#fdf4ff; }
+#conflictPanel .chip-time    { background:#fef2f2; }
+#conflictPanel .chip-icon { flex-shrink:0; width:16px; height:16px; margin-top:1px; }
+#conflictPanel .chip-label { font-weight:700; display:block; margin-bottom:2px; }
+#conflictPanel .chip-detail { color:#374151; }
+</style>
+{% endblock %}
+
+
+{% block content %}
+
+<!-- Profile + quick numbers -->
+<div class="content-card">
+  <div class="card-body" style="padding:20px 24px;">
+    <div class="teacher-profile">
+      <div class="teacher-avatar-lg">
+        {{ teacher.first_name[0]|upper }}{{ teacher.last_name[0]|upper }}
+      </div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:17px;font-weight:800;color:var(--text-primary);letter-spacing:-.3px;">
+          {{ teacher.first_name }} {{ teacher.last_name }}
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">
+          {{ teacher.email }}&ensp;·&ensp;@{{ teacher.username }}
+        </div>
+      </div>
+      <div style="display:flex;gap:24px;flex-shrink:0;">
+        {% set totals = [
+          (schedules|length,  'Classes'),
+          (days_active,       'Days Active'),
+          (sections_count,    'Sections')
+        ] %}
+        {% for val, lbl in totals %}
+        <div style="text-align:center;">
+          <div style="font-size:24px;font-weight:800;color:var(--text-primary);letter-spacing:-1px;line-height:1;">{{ val }}</div>
+          <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text-secondary);margin-top:4px;">{{ lbl }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Per-semester stats -->
+{% if semesters %}
+<div class="stats-grid">
+  {% for sem in semesters %}{% set st = sem_stats[sem] %}
+  <div class="stat-card" data-sem-card="{{ sem }}">
+    <div class="stat-icon {{ 'blue' if '1st' in sem else 'purple' }}">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zm0 2.27L20 9l-8 4.36L4 9l8-3.73zM5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82z"/></svg>
+    </div>
+    <div>
+      <div class="stat-value">{{ st.sections }}</div>
+      <div class="stat-label">Sections · {{ '1st Sem' if '1st' in sem else '2nd Sem' }}</div>
+    </div>
+  </div>
+  <div class="stat-card" data-sem-card="{{ sem }}">
+    <div class="stat-icon {{ 'teal' if '1st' in sem else 'orange' }}">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+    </div>
+    <div>
+      <div class="stat-value">{{ st.classes }}</div>
+      <div class="stat-label">Classes · {{ '1st Sem' if '1st' in sem else '2nd Sem' }}</div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- Timetable + list -->
+{% if schedules %}
+<div class="content-card">
+  <div class="card-header">
+    <h2>Timetable</h2>
+    {% if semesters %}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="sem-tab active" data-sem="all" onclick="setSemester('all',this)">
+        All <span class="sc">{{ schedules|length }}</span>
+      </button>
+      {% for sem in semesters %}
+      <button class="sem-tab" data-sem="{{ sem }}" onclick="setSemester('{{ sem }}',this)">
+        {{ sem }} <span class="sc">{{ sem_stats[sem].classes }}</span>
+      </button>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <div style="padding:20px 24px;">
+    <div id="timetableContainer"></div>
+  </div>
+
+  <div style="border-top:1px solid var(--border);padding:14px 24px 10px;
+              font-size:11px;font-weight:700;text-transform:uppercase;
+              letter-spacing:.5px;color:var(--text-muted);" id="listLabel">
+    All entries &nbsp;({{ schedules|length }})
+  </div>
+
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Day</th><th>Time</th><th>Subject</th>
+          <th>Sem</th><th>Section</th><th>Strand</th><th>Room</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for sch in schedules %}
+        <tr class="sched-row" data-semester="{{ sch.semester or '' }}">
+          <td><span class="badge badge-grade">{{ sch.day }}</span></td>
+          <td style="font-weight:600;font-size:13px;white-space:nowrap;">
+            {{ sch.time_start }} – {{ sch.time_end }}
+          </td>
+          <td>
+            <div style="font-weight:600;">{{ sch.subject_name }}</div>
+            <div style="font-size:11px;color:var(--text-muted);">{{ sch.subject_code }}</div>
+          </td>
+          <td>
+            {% if sch.semester %}
+            <span class="badge" style="background:{% if sch.semester=='1st Semester' %}#dbeafe;color:#1e40af{% else %}#f3e8ff;color:#7e22ce{% endif %};">
+              {{ '1st' if sch.semester=='1st Semester' else '2nd' }}
+            </span>
+            {% else %}<span style="color:var(--text-muted);">—</span>{% endif %}
+          </td>
+          <td>
+            <div style="font-weight:500;">{{ sch.section_name }}</div>
+            <div style="font-size:11px;color:var(--text-muted);">Grade {{ sch.grade_level }}</div>
+          </td>
+          <td>
+            {% if sch.strand_code %}<span class="badge badge-strand">{{ sch.strand_code }}</span>
+            {% else %}<span style="color:var(--text-muted);">—</span>{% endif %}
+          </td>
+          <td style="color:var(--text-secondary);font-size:13px;">{{ sch.room or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% else %}
+<div class="content-card">
+  <div class="empty-state">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+    <h3>No schedule yet</h3>
+    <p>Click "Add Schedule" to assign this teacher to a class.</p>
+  </div>
+</div>
+{% endif %}
+
+
+<!-- ══════════════════════════════════════════════════════════
+     ADD SCHEDULE MODAL  — teacher pre-selected
+══════════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="addScheduleModal">
+  <div class="modal" style="max-width:580px;">
+
+    <div class="modal-header">
+      <h3>Add Schedule Entry</h3>
+      <button class="modal-close" onclick="closeModal('addScheduleModal')">×</button>
+    </div>
+
+    <form id="addSchedForm" method="POST" action="" onsubmit="return handleSubmit(event)">
+
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:0;">
+
+        <!-- Teacher badge (read-only) -->
+        <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;
+                    background:#f0fdf4;border:1.5px solid #bbf7d0;border-radius:10px;
+                    margin-bottom:18px;">
+          <div style="width:36px;height:36px;border-radius:50%;background:var(--brand-gradient);
+                      display:flex;align-items:center;justify-content:center;
+                      color:white;font-weight:800;font-size:13px;flex-shrink:0;">
+            {{ teacher.first_name[0]|upper }}{{ teacher.last_name[0]|upper }}
+          </div>
+          <div>
+            <div style="font-size:13px;font-weight:700;color:#15803d;">
+              {{ teacher.first_name }} {{ teacher.last_name }}
+            </div>
+            <div style="font-size:11px;color:#166534;">Teacher pre-selected</div>
+          </div>
+        </div>
+
+        <!-- Hidden teacher_id field passed to the existing add_schedule route -->
+        <input type="hidden" name="teacher_id" value="{{ teacher.id }}">
+
+        <!-- CONFLICT PANEL -->
+        <div id="conflictPanel" style="display:none;margin-bottom:18px;border-radius:10px;overflow:hidden;border:1.5px solid #fbbf24;">
+          <div id="conflictHeader" style="padding:10px 14px;display:flex;align-items:center;gap:8px;background:#fffbeb;">
+            <svg id="conflictIcon" viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;flex-shrink:0;color:#d97706;">
+              <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
+            </svg>
+            <span id="conflictTitle" style="font-size:13px;font-weight:700;color:#92400e;flex:1;"></span>
+            <span id="conflictSpinner" style="display:none;">
+              <svg viewBox="0 0 24 24" fill="none" style="width:16px;height:16px;animation:spin .7s linear infinite;" stroke="#d97706" stroke-width="2.5">
+                <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48 2.83-2.83" stroke-linecap="round"/>
+              </svg>
+            </span>
+          </div>
+          <div id="conflictList" style="background:#fffdf0;padding:0 14px 12px;display:flex;flex-direction:column;gap:8px;"></div>
+          <div id="forceRow" style="display:none;padding:10px 14px;background:#fff7ed;border-top:1px solid #fde68a;align-items:center;gap:10px;">
+            <input type="checkbox" id="forceCheck" name="force_save" value="1" style="width:15px;height:15px;accent-color:#d97706;">
+            <label for="forceCheck" style="font-size:12px;color:#92400e;font-weight:600;cursor:pointer;">
+              I understand the conflict — save anyway
+            </label>
+          </div>
+        </div>
+
+        <!-- CLEAR PANEL -->
+        <div id="clearPanel" style="display:none;margin-bottom:18px;padding:10px 14px;border-radius:10px;background:#f0fdf4;border:1.5px solid #bbf7d0;align-items:center;gap:8px;">
+          <svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;color:#16a34a;flex-shrink:0;">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+          </svg>
+          <span style="font-size:13px;font-weight:600;color:#15803d;">No conflicts detected — ready to save.</span>
+        </div>
+
+        <!-- Section -->
+        <div class="form-group">
+          <label>Section <span class="required-star">*</span></label>
+          <select id="as_section_id" name="section_id" class="form-control" required onchange="onSectionChange()">
+            <option value="">— Select a section —</option>
+            {% for sec in all_sections %}
+            <option value="{{ sec.id }}">
+              Grade {{ sec.grade_level }} – {{ sec.section_name }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <!-- Strand filter -->
+        <div class="form-group">
+          <label>Strand <span style="color:#9ca3af;font-weight:400;">(filters subjects)</span></label>
+          <select id="as_strand_id" name="strand_id" class="form-control" onchange="loadSubjects()">
+            <option value="">No strand filter</option>
+            {% for st in all_strands %}
+            <option value="{{ st.id }}">{{ st.strand_name }} ({{ st.strand_code }})</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <!-- Subject -->
+        <div class="form-group">
+          <label>Subject <span class="required-star">*</span></label>
+          <select id="as_subject_id" name="subject_id" class="form-control" required onchange="onSubjectChange()">
+            <option value="">Select a subject</option>
+          </select>
+          <div id="subjectHint" style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+            Select a strand above to filter subjects, or leave blank to see all.
+          </div>
+        </div>
+
+        <!-- Day chips -->
+        <div class="form-group">
+          <label>Day(s) <span class="required-star">*</span></label>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">
+            {% for day in ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'] %}
+            <label class="day-chip" id="chip_{{ day }}">
+              <input type="checkbox" name="day" value="{{ day }}" class="day-check"
+                     style="display:none;" onchange="onDayChange()">
+              {{ day[:3] }}
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <!-- Time -->
+        <div class="form-row">
+          <div class="form-group">
+            <label>Time Start <span class="required-star">*</span></label>
+            <input type="time" id="as_time_start" name="time_start" class="form-control" required onchange="scheduleCheck()">
+          </div>
+          <div class="form-group">
+            <label>Time End <span class="required-star">*</span></label>
+            <input type="time" id="as_time_end" name="time_end" class="form-control" required onchange="scheduleCheck()">
+          </div>
+        </div>
+
+        <!-- Room -->
+        <div class="form-group">
+          <label>Room <span style="color:#9ca3af;font-weight:400;">(optional)</span></label>
+          <input type="text" id="as_room" name="room" class="form-control"
+                 placeholder="e.g. Room 101" onchange="scheduleCheck()">
+        </div>
+
+      </div><!-- /modal-body -->
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('addScheduleModal')">Cancel</button>
+        <button type="submit" id="as_submitBtn" class="btn btn-primary" disabled>
+          <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;">
+            <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+          </svg>
+          <span id="as_submitLabel">Add to Schedule</span>
+        </button>
+      </div>
+
+    </form>
+  </div>
+</div>
+
+{% endblock %}
+
+
+{% block extra_js %}
+<script>
+// ── SERVER DATA ───────────────────────────────────────────────
+const TEACHER_ID = {{ teacher.id }};
+
+const scheduleData = [
+  {% for sch in schedules %}{
+    id:           {{ sch.id }},
+    subject_id:   {{ sch.subject_id }},
+    section_id:   {{ sch.section_id }},
+    subject_name: {{ sch.subject_name | tojson }},
+    subject_code: {{ sch.subject_code | tojson }},
+    semester:     {{ (sch.semester or '') | tojson }},
+    teacher_name: {{ ('Gr.' ~ sch.grade_level ~ ' – ' ~ sch.section_name) | tojson }},
+    day:          {{ sch.day | tojson }},
+    time_start:   {{ sch.time_start | tojson }},
+    time_end:     {{ sch.time_end | tojson }},
+    room:         {{ (sch.room or '') | tojson }},
+  },{% endfor %}
+];
+
+const semStats = {{ (sem_stats or {}) | tojson }};
+
+// ── SEMESTER TABS ─────────────────────────────────────────────
+function setSemester(sem, btn) {
+  document.querySelectorAll('.sem-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  const filtered = sem === 'all'
+    ? scheduleData
+    : scheduleData.filter(s => s.semester === sem || s.semester === 'Whole Year');
+  renderTimetable(filtered, 'timetableContainer', null, 'section_id');
+  document.querySelectorAll('.sched-row').forEach(row => {
+    row.style.display = (sem === 'all' || row.dataset.semester === sem || row.dataset.semester === 'Whole Year') ? '' : 'none';
+  });
+  document.querySelectorAll('[data-sem-card]').forEach(card => {
+    card.style.opacity   = (sem === 'all' || card.dataset.semCard === sem) ? '1' : '0.25';
+    card.style.transition = 'opacity .2s';
+  });
+  const count = filtered.length;
+  const lbl   = sem === 'all' ? 'All entries' : sem;
+  document.getElementById('listLabel').innerHTML = `${lbl} &nbsp;(${count})`;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  renderTimetable(scheduleData, 'timetableContainer', null, 'section_id');
+  initSubjects();
+});
+
+// ── SUBJECT LOADING ───────────────────────────────────────────
+let allSubjects = [];
+async function initSubjects() {
+  try {
+    const r   = await fetch('/api/all_subjects');
+    allSubjects = await r.json();
+  } catch(_) {}
+  populateSubjects(allSubjects);
+}
+
+function populateSubjects(list) {
+  const sel  = document.getElementById('as_subject_id');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">Select a subject</option>';
+  list.forEach(s => {
+    const o = document.createElement('option');
+    o.value            = s.id;
+    o.textContent      = `${s.subject_name} (${s.subject_code})`;
+    if (String(s.id) === prev) o.selected = true;
+    sel.appendChild(o);
+  });
+  if (!list.length) sel.innerHTML = '<option value="">No subjects available</option>';
+}
+
+// Called when subject changes
+function onSubjectChange() {
+  scheduleCheck();
+}
+
+async function loadSubjects() {
+  const stid = document.getElementById('as_strand_id').value;
+  const hint = document.getElementById('subjectHint');
+  if (!stid) {
+    populateSubjects(allSubjects);
+    hint.textContent = 'Showing all subjects.';
+    scheduleCheck();
+    return;
+  }
+  document.getElementById('as_subject_id').innerHTML = '<option value="">Loading…</option>';
+  try {
+    const r    = await fetch(`/api/strand/${stid}/subjects`);
+    const data = await r.json();
+    populateSubjects(data);
+    hint.textContent = data.length
+      ? `${data.length} subject(s) in this strand.`
+      : 'No subjects assigned to this strand yet.';
+  } catch(_) {
+    document.getElementById('as_subject_id').innerHTML = '<option value="">Error loading subjects</option>';
+  }
+  scheduleCheck();
+}
+
+// ── SECTION CHANGE → update form action ──────────────────────
+function onSectionChange() {
+  const sec = document.getElementById('as_section_id').value;
+  document.getElementById('addSchedForm').action = sec
+    ? `/schedule/${sec}/add`
+    : '';
+  scheduleCheck();
+}
+
+// ── DAY CHIPS ─────────────────────────────────────────────────
+function onDayChange() {
+  document.querySelectorAll('.day-chip').forEach(chip => {
+    const cb = chip.querySelector('input[type=checkbox]');
+    chip.classList.toggle('selected', cb.checked);
+  });
+  scheduleCheck();
+}
+
+// ── CONFLICT CHECKER ──────────────────────────────────────────
+let checkTimer       = null;
+let lastCheckKey     = '';
+let currentConflicts = [];
+let hasHardError     = false;
+
+const conflictPanel   = document.getElementById('conflictPanel');
+const clearPanel      = document.getElementById('clearPanel');
+const conflictList    = document.getElementById('conflictList');
+const conflictTitle   = document.getElementById('conflictTitle');
+const conflictIcon    = document.getElementById('conflictIcon');
+const conflictHeader  = document.getElementById('conflictHeader');
+const conflictSpinner = document.getElementById('conflictSpinner');
+const forceRow        = document.getElementById('forceRow');
+const forceCheck      = document.getElementById('forceCheck');
+const submitBtn       = document.getElementById('as_submitBtn');
+const submitLabel     = document.getElementById('as_submitLabel');
+
+function scheduleCheck() {
+  clearTimeout(checkTimer);
+  checkTimer = setTimeout(runConflictCheck, 380);
+}
+
+function getFormValues() {
+  const days = Array.from(document.querySelectorAll('.day-check:checked')).map(el => el.value);
+  return {
+    section_id: document.getElementById('as_section_id').value,
+    teacher_id: String(TEACHER_ID),
+    subject_id: document.getElementById('as_subject_id').value || null,
+    day:        days[0] || '',
+    days:       days,
+    time_start: document.getElementById('as_time_start').value,
+    time_end:   document.getElementById('as_time_end').value,
+    room:       document.getElementById('as_room').value.trim(),
+  };
+}
+
+async function runConflictCheck() {
+  const vals = getFormValues();
+  const key  = JSON.stringify(vals);
+  if (key === lastCheckKey) return;
+  lastCheckKey = key;
+
+  if (!vals.section_id || !vals.days.length || !vals.time_start || !vals.time_end) {
+    hideAllPanels();
+    setSubmitState('idle');
+    return;
+  }
+
+  showSpinner();
+
+  try {
+    const days   = vals.days.length ? vals.days : [vals.day];
+    const checks = await Promise.all(days.map(day =>
+      fetch('/api/schedule/check_conflict', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ ...vals, day }),
+      }).then(r => r.json()).then(data => ({ day, data }))
+    ));
+
+    const merged = { conflicts: [], ready: true, workload: checks[0].data.workload };
+    checks.forEach(({ day, data }) => {
+      data.conflicts.forEach(c => {
+        merged.conflicts.push({ ...c, detail: `(${day}) ${c.detail}` });
+      });
+      if (!data.ready) merged.ready = false;
+    });
+
+    hideSpinner();
+    applyResult(merged);
+  } catch(_) {
+    hideSpinner();
+    hideAllPanels();
+    setSubmitState('idle');
+  }
+}
+
+function applyResult(data) {
+  currentConflicts = data.conflicts || [];
+  hasHardError     = currentConflicts.some(c => c.type === 'time');
+
+  if (!currentConflicts.length) {
+    conflictPanel.style.display = 'none';
+    clearPanel.style.display    = 'flex';
+    forceRow.style.display      = 'none';
+    forceCheck.checked          = false;
+    setSubmitState('ready');
+    return;
+  }
+
+  clearPanel.style.display = 'none';
+  conflictList.innerHTML   = '';
+
+  const iconMap = {
+    section: { path: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z', color: '#dc2626' },
+    teacher: { path: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z', color: '#d97706' },
+    room:    { path: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z', color: '#7c3aed' },
+    time:    { path: 'M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z',                                                color: '#dc2626' },
+  };
+
+  currentConflicts.forEach(c => {
+    const ic   = iconMap[c.type] || iconMap.section;
+    const chip = document.createElement('div');
+    chip.className = `chip chip-${c.type}`;
+    chip.innerHTML = `
+      <svg class="chip-icon" viewBox="0 0 24 24" fill="${ic.color}"><path d="${ic.path}"/></svg>
+      <div>
+        <span class="chip-label" style="color:${ic.color};">${c.label}</span>
+        <span class="chip-detail">${c.detail}</span>
+      </div>`;
+    conflictList.appendChild(chip);
+  });
+
+  if (hasHardError) {
+    conflictHeader.style.background = '#fef2f2';
+    conflictPanel.style.borderColor = '#fca5a5';
+    conflictTitle.textContent       = 'Cannot save — fix the error below.';
+    conflictTitle.style.color       = '#b91c1c';
+    conflictIcon.style.color        = '#b91c1c';
+    forceRow.style.display          = 'none';
+    forceCheck.checked              = false;
+    setSubmitState('blocked');
+  } else {
+    conflictHeader.style.background = '#fffbeb';
+    conflictPanel.style.borderColor = '#fbbf24';
+    conflictTitle.textContent       = `${currentConflicts.length} conflict(s) detected.`;
+    conflictTitle.style.color       = '#92400e';
+    conflictIcon.style.color        = '#d97706';
+    forceRow.style.display          = 'flex';
+    setSubmitState('warn');
+  }
+  conflictPanel.style.display = 'block';
+}
+
+function hideAllPanels() {
+  conflictPanel.style.display = 'none';
+  clearPanel.style.display    = 'none';
+  forceRow.style.display      = 'none';
+}
+
+function showSpinner() {
+  conflictSpinner.style.display   = 'inline';
+  conflictTitle.textContent       = 'Checking for conflicts…';
+  conflictPanel.style.display     = 'block';
+  conflictHeader.style.background = '#f9fafb';
+  conflictPanel.style.borderColor = '#e5e7eb';
+  conflictList.innerHTML          = '';
+  clearPanel.style.display        = 'none';
+  setSubmitState('checking');
+}
+
+function hideSpinner() {
+  conflictSpinner.style.display = 'none';
+}
+
+function setSubmitState(state) {
+  submitBtn.disabled = true;
+  submitBtn.classList.remove('btn-primary', 'btn-danger');
+  if (state === 'ready') {
+    submitBtn.disabled = false;
+    submitBtn.classList.add('btn-primary');
+    submitLabel.textContent = 'Add to Schedule';
+  } else if (state === 'warn') {
+    submitBtn.classList.add('btn-primary');
+    submitLabel.textContent = 'Add to Schedule';
+    updateForceState();
+  } else if (state === 'blocked') {
+    submitBtn.classList.add('btn-danger');
+    submitLabel.textContent = 'Fix Errors First';
+  } else {
+    submitBtn.classList.add('btn-primary');
+    submitLabel.textContent = 'Add to Schedule';
+  }
+}
+
+forceCheck.addEventListener('change', updateForceState);
+function updateForceState() {
+  if (!hasHardError && currentConflicts.length) {
+    submitBtn.disabled = !forceCheck.checked;
+  }
+}
+
+function handleSubmit(e) {
+  if (hasHardError) { e.preventDefault(); return false; }
+  if (currentConflicts.length && !forceCheck.checked) { e.preventDefault(); return false; }
+  if (!document.getElementById('as_section_id').value) {
+    e.preventDefault();
+    alert('Please select a section.');
+    return false;
+  }
+  return true;
+}
+
+// ── OPEN / RESET MODAL ────────────────────────────────────────
+function openAddScheduleModal() {
+  document.getElementById('addSchedForm').reset();
+  document.getElementById('addSchedForm').action = '';
+  hideAllPanels();
+  currentConflicts       = [];
+  hasHardError           = false;
+  lastCheckKey           = '';
+  submitBtn.disabled     = true;
+  submitLabel.textContent = 'Add to Schedule';
+  submitBtn.classList.remove('btn-danger');
+  submitBtn.classList.add('btn-primary');
+  document.querySelectorAll('.day-chip').forEach(c => c.classList.remove('selected'));
+  populateSubjects(allSubjects);
+  document.getElementById('subjectHint').textContent =
+    'Select a strand above to filter subjects, or leave blank to see all.';
+  openModal('addScheduleModal');
+}
+</script>
+{% endblock %}

@@ -1,0 +1,183 @@
+{% extends "layout.html" %}
+{% block title %}Subjects{% endblock %}
+{% block page_title %}Subjects{% endblock %}
+{% block page_subtitle %}Master subject list — assign subjects to strands in Strand Management{% endblock %}
+{% block header_actions %}
+  <a href="{{ url_for('strands') }}" class="btn btn-secondary">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+    Strand Management
+  </a>
+  <button class="btn btn-primary" onclick="openModal('addSubjectModal')">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+    Add Subject
+  </button>
+{% endblock %}
+
+{% block content %}
+<div class="content-card">
+  <div class="card-header">
+    <h2>All Subjects <span style="font-weight:400;color:#6b7280;font-size:14px;">({{ subjects|length }})</span></h2>
+  </div>
+
+  {% if subjects %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Subject</th>
+          <th>Code</th>
+          <th>Grade</th>
+          <th>Strand</th>
+          <th>Semester</th>
+          <th style="text-align:right;">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in subjects %}
+        <tr>
+          <td style="color:#9ca3af;font-size:12px;">{{ loop.index }}</td>
+          <td><strong>{{ s.subject_name }}</strong></td>
+          <td><span class="badge badge-section">{{ s.subject_code }}</span></td>
+          <td><span class="badge badge-grade">Gr. {{ s.grade_level }}</span></td>
+          <td>
+            {% if s.strand %}
+              <span class="badge badge-strand">{{ s.strand }}</span>
+            {% else %}
+              <span style="color:var(--text-muted);">—</span>
+            {% endif %}
+          </td>
+          <td style="color:var(--text-secondary);font-size:13px;">{{ s.semester or '—' }}</td>
+          <td style="text-align:right;">
+            <div style="display:flex;gap:8px;justify-content:flex-end;">
+              <button class="btn btn-secondary btn-sm" onclick="editSubject({{ s.id }})">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                Edit
+              </button>
+              <form id="del-sub-{{ s.id }}" method="POST" action="{{ url_for('delete_subject', sid=s.id) }}" style="display:inline;">
+                <button type="button" class="btn btn-danger btn-sm" onclick="confirmDelete('del-sub-{{ s.id }}')">
+                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/></svg>
+    <h3>No subjects yet</h3>
+    <p>Click "Add Subject" to build your master subject list</p>
+  </div>
+  {% endif %}
+</div>
+
+<!-- ADD SUBJECT MODAL -->
+<div class="modal-overlay" id="addSubjectModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Add New Subject</h3>
+      <button class="modal-close" onclick="closeModal('addSubjectModal')">×</button>
+    </div>
+    <form method="POST" action="{{ url_for('add_subject') }}">
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Subject Code</label>
+            <input type="text" name="subject_code" class="form-control" placeholder="e.g. MATH11" required>
+          </div>
+          <div class="form-group">
+            <label>Grade Level</label>
+            <select name="grade_level" class="form-control" required>
+              <option value="">Select Grade</option>
+              {% for g in ['7','8','9','10','11','12'] %}
+              <option value="{{ g }}">Grade {{ g }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Subject Name</label>
+          <input type="text" name="subject_name" class="form-control" placeholder="e.g. General Mathematics" required>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Strand Tag <span style="color:#9ca3af;font-weight:400;">(optional label)</span></label>
+            <input type="text" name="strand" class="form-control" placeholder="e.g. STEM, ABM, Core">
+          </div>
+          <div class="form-group">
+            <label>Semester</label>
+            <select name="semester" class="form-control">
+              <option value="">N/A</option>
+              <option value="1st Semester">1st Semester</option>
+              <option value="2nd Semester">2nd Semester</option>
+              <option value="Whole Year">Whole Year</option>
+              <option value="Whole Year">Whole Year</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('addSubjectModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Subject</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- EDIT SUBJECT MODAL -->
+<div class="modal-overlay" id="editSubjectModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Edit Subject</h3>
+      <button class="modal-close" onclick="closeModal('editSubjectModal')">×</button>
+    </div>
+    <form id="edit_subject_form" method="POST" action="">
+      <input type="hidden" id="edit_subject_id" name="subject_id">
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Subject Code</label>
+            <input type="text" id="edit_subject_code" name="subject_code" class="form-control" required>
+          </div>
+          <div class="form-group">
+            <label>Grade Level</label>
+            <select id="edit_grade_level_sub" name="grade_level" class="form-control" required>
+              {% for g in ['7','8','9','10','11','12'] %}
+              <option value="{{ g }}">Grade {{ g }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Subject Name</label>
+          <input type="text" id="edit_subject_name" name="subject_name" class="form-control" required>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Strand Tag</label>
+            <input type="text" id="edit_strand" name="strand" class="form-control">
+          </div>
+          <div class="form-group">
+            <label>Semester</label>
+            <select id="edit_semester" name="semester" class="form-control">
+              <option value="">N/A</option>
+              <option value="1st Semester">1st Semester</option>
+              <option value="2nd Semester">2nd Semester</option>
+              <option value="Whole Year">Whole Year</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('editSubjectModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% endblock %}

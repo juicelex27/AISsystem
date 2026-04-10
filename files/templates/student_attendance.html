@@ -1,0 +1,193 @@
+{% extends "portal_layout.html" %}
+{% block title %}My Attendance{% endblock %}
+{% block page_title %}My Attendance{% endblock %}
+{% block page_subtitle %}Your attendance records for school events and classes{% endblock %}
+
+{% block extra_css %}
+<style>
+.sem-tab { display:inline-flex;align-items:center;gap:5px;padding:6px 16px;border-radius:99px;
+  font-size:13px;font-weight:600;border:1.5px solid var(--border);background:#fff;
+  color:var(--text-secondary);cursor:pointer;transition:all .15s; }
+.sem-tab.active { background:var(--brand-gradient);border-color:transparent;color:#fff; }
+
+.ev-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px; }
+.ev-card { background:var(--bg-white);border:1px solid var(--border);border-radius:var(--radius-md);
+  box-shadow:var(--shadow-sm);overflow:hidden;display:flex;flex-direction:column;
+  transition:box-shadow .2s,transform .2s; }
+.ev-card:hover { box-shadow:var(--shadow-md);transform:translateY(-2px); }
+.ev-accent { height:4px; }
+.ev-accent.school { background:linear-gradient(90deg,#3b82f6,#1d4ed8); }
+.ev-accent.class  { background:linear-gradient(90deg,#10b981,#059669); }
+.ev-body { padding:15px 17px;flex:1;display:flex;flex-direction:column;gap:6px; }
+.ev-date { font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px; }
+.ev-title { font-size:14px;font-weight:800;color:var(--text-primary);letter-spacing:-.2px;line-height:1.3; }
+.ev-meta { font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:5px; }
+.ev-meta svg { width:12px;height:12px;flex-shrink:0;opacity:.6; }
+.ev-footer { padding:10px 17px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px; }
+.att-badge { display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700; }
+.att-present { background:#d1fae5;color:#065f46; }
+.att-absent  { background:#fee2e2;color:#991b1b; }
+.att-excused { background:#fef3c7;color:#92400e; }
+.att-late    { background:#ede9fe;color:#5b21b6; }
+.att-none    { background:#f3f4f6;color:#6b7280; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- Tabs -->
+<div style="display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap;">
+  <button class="sem-tab active" onclick="showTab('school',this)">🏫 School Events</button>
+  <button class="sem-tab" onclick="showTab('class',this)">📚 Class Attendance</button>
+  {% if authorized_events %}
+  <button class="sem-tab" onclick="showTab('take',this)" style="background:linear-gradient(90deg,#8b5cf6,#6d28d9);border-color:transparent;color:#fff;">
+    ✏️ Take Attendance <span style="background:rgba(255,255,255,.25);border-radius:99px;padding:0 6px;font-size:10px;">{{ authorized_events|length }}</span>
+  </button>
+  {% endif %}
+</div>
+
+<!-- School Events -->
+<div id="tab-school">
+  {% if school_events %}
+  <div class="ev-grid">
+    {% for ev in school_events %}
+    <div class="ev-card">
+      <div class="ev-accent school"></div>
+      <div class="ev-body">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <span class="ev-date">{{ ev.event_date }}</span>
+          <span style="font-size:11px;padding:2px 8px;background:#dbeafe;color:#1e40af;border-radius:20px;font-weight:700;">🏫 School</span>
+        </div>
+        <div class="ev-title">{{ ev.title }}</div>
+        {% if ev.description %}
+        <div class="ev-meta">{{ ev.description }}</div>
+        {% endif %}
+      </div>
+      <div class="ev-footer">
+        {% if ev.status %}
+        <span class="att-badge att-{{ ev.status|lower }}">
+          {{ '✅' if ev.status=='Present' else ('❌' if ev.status=='Absent' else ('🟡' if ev.status=='Excused' else '🕐')) }}
+          {{ ev.status }}
+        </span>
+        {% else %}
+        <span class="att-badge att-none">Not recorded</span>
+        {% endif %}
+        <a href="{{ url_for('student_attendance_event', eid=ev.id) }}" class="btn btn-secondary btn-sm">View</a>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="content-card">
+    <div class="empty-state">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 11H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2zm2-7h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11z"/></svg>
+      <h3>No school events yet</h3>
+      <p>School attendance events will appear here once created.</p>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Class Attendance -->
+<div id="tab-class" style="display:none;">
+  {% if class_events %}
+  <div class="ev-grid">
+    {% for ev in class_events %}
+    <div class="ev-card">
+      <div class="ev-accent class"></div>
+      <div class="ev-body">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <span class="ev-date">{{ ev.event_date }}</span>
+          <span style="font-size:11px;padding:2px 8px;background:#d1fae5;color:#065f46;border-radius:20px;font-weight:700;">📚 Class</span>
+        </div>
+        <div class="ev-title">{{ ev.title }}</div>
+        {% if ev.subject_name %}
+        <div class="ev-meta">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/></svg>
+          {{ ev.subject_name }}{% if ev.subject_code %} ({{ ev.subject_code }}){% endif %}
+        </div>
+        {% endif %}
+        {% if ev.note %}
+        <div class="ev-meta" style="color:var(--text-muted);font-style:italic;">{{ ev.note }}</div>
+        {% endif %}
+      </div>
+      <div class="ev-footer">
+        {% if ev.status %}
+        <span class="att-badge att-{{ ev.status|lower }}">
+          {{ '✅' if ev.status=='Present' else ('❌' if ev.status=='Absent' else ('🟡' if ev.status=='Excused' else '🕐')) }}
+          {{ ev.status }}
+        </span>
+        {% else %}
+        <span class="att-badge att-none">Not recorded</span>
+        {% endif %}
+        <a href="{{ url_for('student_attendance_event', eid=ev.id) }}" class="btn btn-secondary btn-sm">View</a>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="content-card">
+    <div class="empty-state">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 11H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2zm2-7h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11z"/></svg>
+      <h3>No class attendance yet</h3>
+      <p>Your teacher's attendance records will appear here.</p>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Take Attendance tab -->
+{% if authorized_events %}
+<div id="tab-take" style="display:none;">
+  <div style="margin-bottom:16px;padding:12px 16px;background:#f3e8ff;border:1px solid #e9d5ff;border-radius:8px;font-size:13px;color:#6d28d9;display:flex;align-items:center;gap:8px;">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:16px;height:16px;flex-shrink:0;"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
+    You are authorized to take attendance for the following events.
+  </div>
+  <div class="ev-grid">
+    {% for ev in authorized_events %}
+    <div class="ev-card">
+      <div class="ev-accent school"></div>
+      <div class="ev-body">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <span style="font-size:11px;padding:2px 8px;background:#f3e8ff;color:#7c3aed;border-radius:20px;font-weight:700;">✏️ Authorized</span>
+          <span style="font-size:12px;font-weight:600;color:var(--text-muted);">{{ ev.event_date }}</span>
+        </div>
+        <div class="ev-title">{{ ev.title }}</div>
+        {% if ev.time_start %}
+        <div class="ev-meta">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
+          {{ ev.time_start }}{% if ev.time_end %} – {{ ev.time_end }}{% endif %}
+        </div>
+        {% endif %}
+      </div>
+      <div class="ev-footer" style="justify-content:flex-end;">
+  {% set is_closed = ev.time_end and now_hm > ev.time_end if now_hm is defined else false %}
+      {% if is_closed %}
+        <span style="font-size:12px;font-weight:700;color:#b91c1c;background:#fef2f2;padding:4px 10px;border-radius:20px;">🔒 Closed</span>
+      {% else %}
+        <a href="{{ url_for('student_take_attendance', eid=ev.id) }}" class="btn btn-primary btn-sm" style="background:linear-gradient(90deg,#8b5cf6,#6d28d9);border:none;">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+          Open & Take
+        </a>
+      {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function showTab(key, btn) {
+  document.querySelectorAll('.sem-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('tab-school').style.display = key === 'school' ? '' : 'none';
+  document.getElementById('tab-class').style.display  = key === 'class'  ? '' : 'none';
+  const takeTab = document.getElementById('tab-take');
+  if (takeTab) takeTab.style.display = key === 'take' ? '' : 'none';
+}
+</script>
+{% endblock %}
