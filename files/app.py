@@ -1205,7 +1205,33 @@ def shs_set_offering(sid):
 
     conn.commit(); conn.close()
     flash('SHS offering updated.', 'success')
+    return redirect(url_for('shs_offerings'))@app.route('/shs/offerings/set/<int:sid>', methods=['POST'])
+@login_required
+def shs_set_offering(sid):
+    shs_type = (request.form.get('shs_type') or '').strip()
+    if shs_type not in ('', 'Core', 'Elective', 'Field', 'Special'):
+        flash('Invalid SHS type.', 'danger')
+        return redirect(url_for('shs_offerings'))
+ 
+    section_ids = [int(x) for x in request.form.getlist('section_ids') if str(x).isdigit()]
+ 
+    conn = get_db()
+    conn.execute("UPDATE subjects SET shs_type=? WHERE id=?", (shs_type, sid))
+ 
+    # Electives store explicit section offerings.
+    # Core, Field, and Special are automatic / all-sections — no explicit offerings needed.
+    conn.execute("DELETE FROM subject_section_offerings WHERE subject_id=?", (sid,))
+    if shs_type == 'Elective':
+        for sec_id in sorted(set(section_ids)):
+            conn.execute(
+                "INSERT OR IGNORE INTO subject_section_offerings (subject_id, section_id) VALUES (?, ?)",
+                (sid, sec_id)
+            )
+ 
+    conn.commit(); conn.close()
+    flash('SHS offering updated.', 'success')
     return redirect(url_for('shs_offerings'))
+ 
 
 # ── STRANDS ──
 @app.route('/strands')

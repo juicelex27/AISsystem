@@ -1,7 +1,7 @@
 {% extends "layout.html" %}
 {% block title %}SHS Offerings{% endblock %}
 {% block page_title %}SHS Offerings{% endblock %}
-{% block page_subtitle %}Set which SHS subjects are Core/Elective and assign electives to sections{% endblock %}
+{% block page_subtitle %}Set which SHS subjects are Core, Elective, Field or Special and assign electives to sections{% endblock %}
 
 {% block content %}
 <div class="content-card">
@@ -36,6 +36,7 @@
           <option value="">All</option>
           <option value="Core">Core</option>
           <option value="Elective">Elective</option>
+          <option value="Field">Field</option>
           <option value="Special">Special</option>
           <option value="(unset)">(unset)</option>
         </select>
@@ -63,6 +64,19 @@
               <span class="badge" style="background:rgba(34,197,94,.12);color:#15803d;border:1px solid rgba(34,197,94,.25);">Core</span>
             {% elif st == 'Elective' %}
               <span class="badge" style="background:rgba(59,130,246,.12);color:#1d4ed8;border:1px solid rgba(59,130,246,.25);">Elective</span>
+            {% elif st == 'Field' %}
+              <span class="badge" style="background:rgba(234,88,12,.12);color:#c2410c;border:1px solid rgba(234,88,12,.25);">
+                Field
+              </span>
+              {% if s.semester %}
+              <span class="badge" style="background:rgba(234,88,12,.08);color:#9a3412;border:1px solid rgba(234,88,12,.18);font-size:10px;">
+                {{ s.semester }}
+              </span>
+              {% else %}
+              <span class="badge" style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-size:10px;">
+                ⚠ Set semester
+              </span>
+              {% endif %}
             {% elif st == 'Special' %}
               <span class="badge" style="background:rgba(245,158,11,.12);color:#92400e;border:1px solid rgba(245,158,11,.25);">Special</span>
             {% else %}
@@ -83,16 +97,27 @@
                 {% else %}
                   <div style="color:var(--text-muted);font-size:13px;">No sections selected.</div>
                 {% endif %}
+              {% elif st == 'Field' %}
+                <div style="color:var(--text-secondary);font-size:13px;">All Grade {{ s.grade_level }} sections.</div>
               {% else %}
                 <div style="color:var(--text-muted);font-size:13px;">—</div>
               {% endif %}
             </div>
             <div>
-              <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;">Time Rules</div>
+              <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;">When Offered</div>
               {% if st == 'Core' %}
-                <div style="color:var(--text-secondary);font-size:13px;">1 hour per day.</div>
+                <div style="color:var(--text-secondary);font-size:13px;">All terms, 1 hour per day.</div>
               {% elif st == 'Elective' %}
                 <div style="color:var(--text-secondary);font-size:13px;">2 hours in one block.</div>
+              {% elif st == 'Field' %}
+                {% if s.semester %}
+                  <div style="color:#c2410c;font-size:13px;font-weight:600;">
+                    {{ '🌱 1st &amp; 2nd Term' if s.semester in ('1st Term', '2nd Term') else '3rd Term only' }}
+                    <span style="font-weight:400;color:var(--text-muted);"> — set via semester field</span>
+                  </div>
+                {% else %}
+                  <div style="color:#dc2626;font-size:13px;">No semester set — edit subject to assign a term.</div>
+                {% endif %}
               {% elif st == 'Special' %}
                 <div style="color:var(--text-secondary);font-size:13px;">Fixed slot (handled by auto-schedule).</div>
               {% else %}
@@ -142,10 +167,11 @@
         <div class="form-row">
           <div class="form-group">
             <label>Type</label>
-            <select id="off_shs_type" name="shs_type" class="form-control">
+            <select id="off_shs_type" name="shs_type" class="form-control" onchange="onTypeChange()">
               <option value="">(unset)</option>
               <option value="Core">Core</option>
               <option value="Elective">Elective</option>
+              <option value="Field">Field</option>
               <option value="Special">Special</option>
             </select>
           </div>
@@ -159,8 +185,28 @@
             <div style="margin-top:6px;font-size:12px;color:var(--text-muted);">Shown only when Type is Elective.</div>
           </div>
         </div>
-        <div style="font-size:12px;color:var(--text-muted);line-height:1.5;">
+
+        <!-- Field type info panel -->
+        <div id="off_field_info" style="display:none;padding:14px 16px;background:#fff7ed;border:1.5px solid #fed7aa;border-radius:10px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <span style="font-size:13px;font-weight:700;color:#c2410c;">Field Subject</span>
+          </div>
+          <p style="font-size:12px;color:#92400e;margin:0;line-height:1.6;">
+            Field subjects appear in <strong>all sections</strong> automatically.
+            The <strong>semester field on the subject</strong> controls which term(s) they appear in:
+          </p>
+          <ul style="font-size:12px;color:#92400e;margin:8px 0 0 16px;line-height:1.8;">
+            <li><strong>1st Term or 2nd Term</strong> → shown in 1st &amp; 2nd Term schedules (e.g. Research Methods, In-Campus Field Exposure)</li>
+            <li><strong>3rd Term</strong> → shown in 3rd Term only (e.g. Work Immersion)</li>
+          </ul>
+          <p style="font-size:12px;color:#92400e;margin:8px 0 0;font-style:italic;">
+            To change when a Field subject appears, edit the subject's <strong>Term Scope</strong> in Subjects → Edit.
+          </p>
+        </div>
+
+        <div style="font-size:12px;color:var(--text-muted);line-height:1.5;margin-top:8px;" id="off_type_hint">
           Core subjects are automatically offered to all sections for their grade. Electives must be assigned to specific sections.
+          Field subjects (e.g. Work Immersion, Research) follow the subject's term scope setting.
         </div>
       </div>
       <div class="modal-footer">
@@ -194,11 +240,18 @@
     if (c) c.textContent = `(${visible})`;
   }
 
-  function syncOfferingModalSectionsVisibility() {
+  function onTypeChange() {
     const typeSel = document.getElementById('off_shs_type');
-    const wrap = document.getElementById('off_sections_wrap');
+    const wrap    = document.getElementById('off_sections_wrap');
+    const fieldInfo = document.getElementById('off_field_info');
+    const hint    = document.getElementById('off_type_hint');
+
     const isElective = typeSel && typeSel.value === 'Elective';
-    if (wrap) wrap.style.display = isElective ? '' : 'none';
+    const isField    = typeSel && typeSel.value === 'Field';
+
+    if (wrap)      wrap.style.display      = isElective ? '' : 'none';
+    if (fieldInfo) fieldInfo.style.display = isField    ? '' : 'none';
+    if (hint)      hint.style.display      = isField    ? 'none' : '';
   }
 
   function filterSectionsBySubjectGrade(subjectGrade) {
@@ -206,7 +259,6 @@
     if (!sel) return;
     Array.from(sel.options).forEach(opt => {
       const grade = (opt.dataset.grade || '').trim();
-      // option dataset grade uses "Grade 11"/"Grade 12"
       const show = !subjectGrade || grade.endsWith(String(subjectGrade));
       opt.hidden = !show;
     });
@@ -231,7 +283,7 @@
       const form = document.getElementById('off_form');
       if (form) form.action = `/shs/offerings/set/${data.id}`;
 
-      syncOfferingModalSectionsVisibility();
+      onTypeChange();
       openModal('editShsOfferingModal');
     });
   }
@@ -245,11 +297,10 @@
     if (typeEl) typeEl.addEventListener('change', applyOfferingFilters);
 
     const modalType = document.getElementById('off_shs_type');
-    if (modalType) modalType.addEventListener('change', syncOfferingModalSectionsVisibility);
+    if (modalType) modalType.addEventListener('change', onTypeChange);
 
     applyOfferingFilters();
-    syncOfferingModalSectionsVisibility();
+    onTypeChange();
   });
 </script>
 {% endblock %}
-
