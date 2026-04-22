@@ -43,15 +43,19 @@
 
   <!-- Timetable view -->
   <div id="viewTimetable" style="padding:16px;">
-    <div style="display:flex;gap:8px;margin-bottom:14px;">
-      <button class="btn btn-secondary btn-sm sem-btn" data-sem="1st Semester"
-        onclick="switchSem('1st Semester', this)"
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+      <button class="btn btn-secondary btn-sm sem-btn" data-sem="1st Term"
+        onclick="switchSem('1st Term', this)"
         style="background:var(--brand-gradient);color:#fff;border-color:transparent;">
-        1st Semester
+        1st Term
       </button>
-      <button class="btn btn-secondary btn-sm sem-btn" data-sem="2nd Semester"
-        onclick="switchSem('2nd Semester', this)">
-        2nd Semester
+      <button class="btn btn-secondary btn-sm sem-btn" data-sem="2nd Term"
+        onclick="switchSem('2nd Term', this)">
+        2nd Term
+      </button>
+      <button class="btn btn-secondary btn-sm sem-btn" data-sem="3rd Term"
+        onclick="switchSem('3rd Term', this)">
+        3rd Term
       </button>
     </div>
     <div id="teacherTimetable"></div>
@@ -112,7 +116,16 @@ const scheduleData = [
 // Patch: add uniq_key as numeric hash for colorBy
 scheduleData.forEach(s => { s._colorKey = s.subject_id * 1000 + s.section_id; });
 
-let activeSem = '1st Semester';
+let activeSem = '1st Term';
+
+function scopeCoversTerm(scope, term) {
+  if (!term) return true;
+  if (!scope) return true;
+  if (scope === 'Whole Year') return true;
+  if (scope === '1st Semester') return (term === '1st Term' || term === '2nd Term');
+  if (scope === '2nd Semester') return (term === '3rd Term');
+  return scope === term;
+}
 
 function showView(view) {
   document.getElementById('viewTimetable').style.display = view === 'timetable' ? '' : 'none';
@@ -126,12 +139,12 @@ function switchSem(sem, el) {
   document.querySelectorAll('.sem-btn').forEach(b => {
     b.style.cssText = b.dataset.sem === sem ? 'background:var(--brand-gradient);color:#fff;border-color:transparent;' : '';
   });
-  const filtered = scheduleData.filter(s => !s.sem || s.sem === sem || s.sem === 'Whole Year');
+  const filtered = scheduleData.filter(s => scopeCoversTerm(s.sem, sem));
   renderTimetable(filtered, 'teacherTimetable', null, '_colorKey');
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  switchSem('1st Semester', null);
+  switchSem('1st Term', null);
 });
 </script>
 {% endif %}

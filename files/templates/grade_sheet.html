@@ -4,53 +4,68 @@
 {% block page_subtitle %}{{ section.section_name }} · Grade {{ section.grade_level }}{% if section.strand_code %} · {{ section.strand_code }}{% endif %}{% endblock %}
 
 {% block header_actions %}
-  <a href="{{ url_for('grade_summary', sec_id=section.id, sem=active_sem) }}" class="btn btn-secondary">
-    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm10 0h8v8h-8z"/></svg>
-    Summary
-  </a>
-  <a href="{{ url_for('grades_home') }}" class="btn btn-secondary">
-    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
-    Back
-  </a>
-  {% if sel_sub_id %}
-  <form method="GET" action="{{ url_for('admin_export_grades', sec_id=section.id) }}" style="display:flex;align-items:center;gap:6px;">
-    <input type="hidden" name="subject_id" value="{{ sel_sub_id }}">
-    <input type="hidden" name="semester" value="{{ active_sem if (not sel_subject or sel_subject.semester in ('','Whole Year')) else sel_subject.semester }}">
-    <select name="period" class="form-control" style="width:140px;padding:6px 10px;font-size:13px;">
+  <div class="action-group">
+    <a href="{{ url_for('grade_summary', sec_id=section.id, sem=active_sem) }}" class="btn btn-secondary">
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm10 0h8v8h-8z"/></svg>
+      Summary
+    </a>
+    <a href="{{ url_for('grades_home') }}" class="btn btn-secondary">
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+      Back
+    </a>
+    <button type="button" class="btn btn-secondary" onclick="window.print()">
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/></svg>
+      Print
+    </button>
+  </div>
+
+  {% if subjects %}
+  <div class="action-group">
+    <select id="exportPeriodSel" class="form-control" style="width:140px;">
       <option value="all">All Terms</option>
       <option value="1st Term">1st Term</option>
       <option value="2nd Term">2nd Term</option>
       <option value="3rd Term">3rd Term</option>
     </select>
-    <button type="submit" class="btn btn-secondary">
+
+    {% if sel_sub_id %}
+    <button type="button" class="btn btn-secondary" onclick="exportSelectedCSV()">
       <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
       Export CSV
     </button>
-  </form>
-  <button class="btn btn-secondary" onclick="document.getElementById('adminCsvInput').click()">
-    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
-    Import CSV
-  </button>
-  <input type="file" id="adminCsvInput" accept=".csv" style="display:none" onchange="handleAdminImport(this)">
+    <button type="button" class="btn btn-secondary" onclick="document.getElementById('adminCsvInput').click()">
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
+      Import CSV
+    </button>
+    <input type="file" id="adminCsvInput" accept=".csv" style="display:none" onchange="handleAdminImport(this)">
+    {% endif %}
+
+    <button type="button" class="btn btn-secondary" onclick="exportAllCSV()">
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+      Export All (CSV)
+    </button>
+    <button type="button" class="btn btn-secondary" onclick="document.getElementById('adminAllCsvInput').click()">
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
+      Import All (CSV)
+    </button>
+    <input type="file" id="adminAllCsvInput" accept=".csv" style="display:none" onchange="handleAdminImportAllCSV(this)">
+  </div>
   {% endif %}
+
   {% if sel_sub_id %}
-  <div style="display:flex;align-items:center;gap:6px;">
-    <select id="clearPeriodSel" class="form-control" style="width:140px;padding:6px 10px;font-size:13px;">
+  <div class="action-group">
+    <select id="clearPeriodSel" class="form-control" style="width:140px;">
       <option value="">— Term —</option>
       <option value="1st Term">1st Term</option>
       <option value="2nd Term">2nd Term</option>
       <option value="3rd Term">3rd Term</option>
     </select>
-    <button class="btn btn-danger btn-sm" onclick="clearGrades()" style="white-space:nowrap;">
+    <button type="button" class="btn btn-danger btn-sm" onclick="clearGrades()">
       <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
       Clear Grades
     </button>
   </div>
   {% endif %}
-  <button class="btn btn-secondary" onclick="window.print()">
-    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/></svg>
-    Print
-  </button>
 {% endblock %}
 
 {% block extra_css %}
@@ -126,26 +141,36 @@
 
 {% block content %}
 
-<!-- Semester tabs -->
+<!-- Term tabs -->
 {% set is_jhs = section.grade_level in ('7', '8', '9', '10') %}
 {% if not is_jhs %}
-{% set sem1_count = subjects_all | selectattr('semester','equalto','1st Semester') | list | length %}
-{% set sem2_count = subjects_all | selectattr('semester','equalto','2nd Semester') | list | length %}
+{% set t1_count = subjects_all | selectattr('semester','equalto','1st Term') | list | length %}
+{% set t2_count = subjects_all | selectattr('semester','equalto','2nd Term') | list | length %}
+{% set t3_count = subjects_all | selectattr('semester','equalto','3rd Term') | list | length %}
+{% set legacy1  = subjects_all | selectattr('semester','equalto','1st Semester') | list | length %}
+{% set legacy2  = subjects_all | selectattr('semester','equalto','2nd Semester') | list | length %}
 {% set wy_count   = subjects_all | selectattr('semester','equalto','Whole Year') | list | length %}
-{% set na_count   = subjects_all | rejectattr('semester','in',['1st Semester','2nd Semester','Whole Year']) | list | length %}
+{% set na_count   = subjects_all | rejectattr('semester','in',['1st Term','2nd Term','3rd Term','1st Semester','2nd Semester','Whole Year']) | list | length %}
 <div class="sem-tab-bar">
-  <a href="{{ url_for('grade_sheet', sec_id=section.id, sem='1st Semester') }}"
-     class="sem-tab {{ 'active' if active_sem == '1st Semester' else '' }}">
-    1st Semester
+  <a href="{{ url_for('grade_sheet', sec_id=section.id, sem='1st Term') }}"
+     class="sem-tab {{ 'active' if active_sem == '1st Term' else '' }}">
+    1st Term
     <span style="font-size:10px;opacity:.75;margin-left:4px;">
-      ({{ sem1_count + wy_count + na_count }} subjects)
+      ({{ t1_count + wy_count + na_count + legacy1 }} subjects)
     </span>
   </a>
-  <a href="{{ url_for('grade_sheet', sec_id=section.id, sem='2nd Semester') }}"
-     class="sem-tab {{ 'active' if active_sem == '2nd Semester' else '' }}">
-    2nd Semester
+  <a href="{{ url_for('grade_sheet', sec_id=section.id, sem='2nd Term') }}"
+     class="sem-tab {{ 'active' if active_sem == '2nd Term' else '' }}">
+    2nd Term
     <span style="font-size:10px;opacity:.75;margin-left:4px;">
-      ({{ sem2_count + wy_count + na_count }} subjects)
+      ({{ t2_count + wy_count + na_count + legacy1 }} subjects)
+    </span>
+  </a>
+  <a href="{{ url_for('grade_sheet', sec_id=section.id, sem='3rd Term') }}"
+     class="sem-tab {{ 'active' if active_sem == '3rd Term' else '' }}">
+    3rd Term
+    <span style="font-size:10px;opacity:.75;margin-left:4px;">
+      ({{ t3_count + wy_count + na_count + legacy2 }} subjects)
     </span>
   </a>
   <a href="{{ url_for('grade_sheet', sec_id=section.id, sem='Whole Year') }}"
@@ -157,7 +182,7 @@
   </a>
   {% if wy_count > 0 %}
   <span style="display:inline-flex;align-items:center;gap:5px;padding:8px 14px;font-size:12px;color:#b45309;border:1.5px solid #fde68a;border-radius:99px;background:#fffbeb;font-weight:600;">
-    📅 {{ wy_count }} Whole Year subject{{ 's' if wy_count != 1 else '' }} appear in both tabs
+    📅 {{ wy_count }} Whole Year subject{{ 's' if wy_count != 1 else '' }} appear in all terms
   </span>
   {% endif %}
 </div>
@@ -186,7 +211,7 @@
       <div style="font-size:16px;font-weight:800;">{{ sel_subject.subject_name }}</div>
       <div style="font-size:12px;color:var(--text-muted);">
         {{ sel_subject.subject_code }}
-        {% if sel_subject.semester %} · <span style="color:{% if sel_subject.semester=='1st Semester' %}#1e40af{% elif sel_subject.semester=='2nd Semester' %}#7e22ce{% else %}#854d0e{% endif %};">{{ sel_subject.semester }}</span>{% endif %}
+        {% if sel_subject.semester %} · <span style="color:{% if sel_subject.semester=='1st Term' %}#1e40af{% elif sel_subject.semester=='2nd Term' %}#7e22ce{% elif sel_subject.semester=='3rd Term' %}#166534{% else %}#854d0e{% endif %};">{{ sel_subject.semester }}</span>{% endif %}
         {% if sel_subject.teachers %} · 👤 {{ sel_subject.teachers | join(' / ') }}{% endif %}
       </div>
     </div>
@@ -509,12 +534,35 @@ function closeReasonModal() {
 function confirmReason() {
   const r = document.getElementById('reasonInput').value.trim();
   if (!r) { document.getElementById('reasonInput').focus(); return; }
+  const cb = pendingReasonCb;
   closeReasonModal();
-  if (pendingReasonCb) pendingReasonCb(r);
+  if (cb) cb(r);
 }
 document.getElementById('reasonInput').addEventListener('keydown', e => {
   if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); confirmReason(); }
 });
+
+function getExportPeriod() {
+  const el = document.getElementById('exportPeriodSel');
+  return el ? el.value : 'all';
+}
+
+function exportSelectedCSV() {
+  if (!SUB_ID) { toast('No subject selected.', 'error'); return; }
+  const period = getExportPeriod();
+  const sem = (SUB_SEM === 'Whole Year' || SUB_SEM === '') ? SEMESTER : SUB_SEM;
+  const url = `/grades/section/${SEC_ID}/export?subject_id=${SUB_ID}`
+            + `&semester=${encodeURIComponent(sem)}`
+            + `&period=${encodeURIComponent(period)}`;
+  window.location = url;
+}
+
+function exportAllCSV() {
+  const period = getExportPeriod();
+  const url = `/grades/section/${SEC_ID}/export_all_csv?semester=${encodeURIComponent(SEMESTER)}`
+            + `&period=${encodeURIComponent(period)}`;
+  window.location = url;
+}
 
 function toast(msg, type) {
   const t = document.createElement('div');
@@ -554,6 +602,28 @@ async function handleAdminImport(input) {
     const d = await r.json();
     if (d.ok) {
       let msg = `Imported: ${d.updated} grade(s) updated.`;
+      if (d.errors > 0) msg += ` ${d.errors} error(s).`;
+      toast(msg, d.errors > 0 ? 'error' : 'success');
+      if (d.error_msgs && d.error_msgs.length) alert('Import errors:\n' + d.error_msgs.join('\n'));
+      if (d.updated > 0) setTimeout(() => location.reload(), 1000);
+    } else {
+      toast(d.error || 'Import failed.', 'error');
+    }
+  } catch(e) { toast('Import failed.', 'error'); }
+}
+
+async function handleAdminImportAllCSV(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+  const fd = new FormData();
+  fd.append('csv_file', file);
+  toast('Importing all subjects…', 'success');
+  try {
+    const r = await fetch(`/grades/section/${SEC_ID}/import_all_csv?semester=${encodeURIComponent(SEMESTER)}`, {method:'POST', body:fd});
+    const d = await r.json();
+    if (d.ok) {
+      let msg = `Imported: ${d.updated} grade(s) updated across ${d.subjects_processed} subject(s).`;
       if (d.errors > 0) msg += ` ${d.errors} error(s).`;
       toast(msg, d.errors > 0 ? 'error' : 'success');
       if (d.error_msgs && d.error_msgs.length) alert('Import errors:\n' + d.error_msgs.join('\n'));

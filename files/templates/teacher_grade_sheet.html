@@ -1,7 +1,7 @@
 {% extends "portal_layout.html" %}
 {% block title %}Grade Sheet — {{ subject.subject_name }}{% endblock %}
 {% block page_title %}Grade Encoding{% endblock %}
-{% block page_subtitle %}{{ subject.subject_name }} · {{ section.section_name }} · Grade {{ section.grade_level }}{% if subject.semester == 'Whole Year' %} · {{ active_sem }}{% endif %}{% endblock %}
+{% block page_subtitle %}{{ subject.subject_name }} · {{ section.section_name }} · Grade {{ section.grade_level }} · {{ eff_sem }}{% endblock %}
 
 {% block header_actions %}
   <a href="{{ url_for('teacher_dashboard') }}" class="btn btn-secondary">
@@ -10,7 +10,7 @@
   </a>
   <form method="GET" action="{{ url_for('teacher_export_grades', sec_id=sec_id, sub_id=sub_id) }}" style="display:flex;align-items:center;gap:6px;">
     <input type="hidden" name="semester" value="{{ eff_sem }}">
-    <select name="period" class="form-control" style="width:140px;padding:6px 10px;font-size:13px;">
+    <select id="teacherPeriodSel" name="period" class="form-control" style="width:140px;padding:6px 10px;font-size:13px;">
       <option value="all">All Periods</option>
       <option value="1st Term">1st Term</option>
       <option value="2nd Term">2nd Term</option>
@@ -26,6 +26,15 @@
     Import CSV
   </button>
   <input type="file" id="csvImportInput" accept=".csv" style="display:none" onchange="handleImport(this)">
+  <button class="btn btn-secondary" type="button" onclick="exportAllTeacherCSV()">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+    Export All (CSV)
+  </button>
+  <button class="btn btn-secondary" type="button" onclick="document.getElementById('csvImportAllInput').click()">
+    <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
+    Import All (CSV)
+  </button>
+  <input type="file" id="csvImportAllInput" accept=".csv" style="display:none" onchange="handleImportAll(this)">
 {% endblock %}
 
 {% block extra_css %}
@@ -72,15 +81,6 @@
 {% endblock %}
 
 {% block content %}
-{% if subject.semester == 'Whole Year' %}
-<div style="display:flex;gap:8px;margin-bottom:20px;align-items:center;">
-  <span style="font-size:12px;font-weight:600;color:var(--text-muted);">Semester:</span>
-  <a href="{{ url_for('teacher_grade_sheet', sec_id=sec_id, sub_id=sub_id, sem='1st Semester') }}"
-     style="padding:5px 16px;border-radius:99px;font-size:12px;font-weight:700;text-decoration:none;border:1.5px solid {{ 'transparent' if active_sem=='1st Semester' else 'var(--border)' }};background:{{ 'var(--brand-gradient)' if active_sem=='1st Semester' else '#fff' }};color:{{ '#fff' if active_sem=='1st Semester' else 'var(--text-secondary)' }};">1st Semester</a>
-  <a href="{{ url_for('teacher_grade_sheet', sec_id=sec_id, sub_id=sub_id, sem='2nd Semester') }}"
-     style="padding:5px 16px;border-radius:99px;font-size:12px;font-weight:700;text-decoration:none;border:1.5px solid {{ 'transparent' if active_sem=='2nd Semester' else 'var(--border)' }};background:{{ 'var(--brand-gradient)' if active_sem=='2nd Semester' else '#fff' }};color:{{ '#fff' if active_sem=='2nd Semester' else 'var(--text-secondary)' }};">2nd Semester</a>
-</div>
-{% endif %}
 <div class="content-card">
   <div style="padding:14px 20px;border-bottom:1px solid var(--border);">
     <div class="legend">
@@ -283,6 +283,35 @@ async function handleImport(input) {
       if (d.errors > 0) msg += ` ${d.errors} error(s).`;
       toast(msg, d.errors > 0 ? 'error' : 'success');
       if (d.error_msgs && d.error_msgs.length) alert('Import errors:\n' + d.error_msgs.join('\n'));
+      if (d.updated > 0) setTimeout(() => location.reload(), 1000);
+    } else { toast(d.error || 'Import failed.', 'error'); }
+  } catch(e) { toast('Import failed.', 'error'); }
+}
+
+function exportAllTeacherCSV() {
+  const sel = document.getElementById('teacherPeriodSel');
+  const period = sel ? sel.value : 'all';
+  const url = `/teacher/grade_sheet/${SEC_ID}/export_all_csv?semester=${encodeURIComponent(SEMESTER)}`
+            + `&period=${encodeURIComponent(period)}`;
+  window.location = url;
+}
+
+async function handleImportAll(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+  const fd = new FormData();
+  fd.append('csv_file', file);
+  toast('Importing all subjects...', 'success');
+  try {
+    const r = await fetch(`/teacher/grade_sheet/${SEC_ID}/import_all_csv?semester=${encodeURIComponent(SEMESTER)}`, {method:'POST', body:fd});
+    const d = await r.json();
+    if (d.ok) {
+      let msg = `Imported: ${d.updated} grade(s) updated.`;
+      if (d.skipped_locked_subjects && d.skipped_locked_subjects.length) msg += ` Skipped locked subjects: ${d.skipped_locked_subjects.join(', ')}.`;
+      if (d.errors > 0) msg += ` ${d.errors} error(s).`;
+      toast(msg, d.errors > 0 ? 'error' : 'success');
+      if (d.error_msgs && d.error_msgs.length) alert('Import errors:\\n' + d.error_msgs.join('\\n'));
       if (d.updated > 0) setTimeout(() => location.reload(), 1000);
     } else { toast(d.error || 'Import failed.', 'error'); }
   } catch(e) { toast('Import failed.', 'error'); }

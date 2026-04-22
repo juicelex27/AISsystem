@@ -127,18 +127,20 @@ const SDATA = {
 </div>
 {% else %}
 
-{% set sem1 = cards | selectattr("sub.semester","equalto","1st Semester") | list %}
-{% set sem2 = cards | selectattr("sub.semester","equalto","2nd Semester") | list %}
+{% set t1   = cards | selectattr("sub.semester","in",["1st Term","1st Semester"]) | list %}
+{% set t2   = cards | selectattr("sub.semester","in",["2nd Term","1st Semester"]) | list %}
+{% set t3   = cards | selectattr("sub.semester","in",["3rd Term","2nd Semester"]) | list %}
 {% set wy   = cards | selectattr("sub.semester","equalto","Whole Year") | list %}
-{% set na   = cards | rejectattr("sub.semester","in",["1st Semester","2nd Semester","Whole Year"]) | list %}
+{% set na   = cards | rejectattr("sub.semester","in",["1st Term","2nd Term","3rd Term","1st Semester","2nd Semester","Whole Year"]) | list %}
 
 <div class="stats-bar">
   <span class="stat-chip">📚 {{ cards|length }} Subject{{ 's' if cards|length != 1 else '' }}</span>
 </div>
 
 <div class="sem-tabs">
-  <button class="sem-tab-btn active" data-sem="1st_Semester" onclick="switchSem('1st_Semester',this)">First Semester</button>
-  <button class="sem-tab-btn"        data-sem="2nd_Semester" onclick="switchSem('2nd_Semester',this)">Second Semester</button>
+  <button class="sem-tab-btn active" data-sem="1st_Term" onclick="switchSem('1st_Term',this)">1st Term</button>
+  <button class="sem-tab-btn"        data-sem="2nd_Term" onclick="switchSem('2nd_Term',this)">2nd Term</button>
+  <button class="sem-tab-btn"        data-sem="3rd_Term" onclick="switchSem('3rd_Term',this)">3rd Term</button>
   <button class="sem-tab-btn"        data-sem="Whole_Year"   onclick="switchSem('Whole_Year',this)">Whole Year</button>
 </div>
 
@@ -162,18 +164,25 @@ const SDATA = {
 </button>
 {% endmacro %}
 
-<!-- 1st Semester (+ Whole Year) -->
-<div class="sem-panel subjects-grid active" id="panel_1st_Semester">
-  {% set p1 = sem1 + wy + na %}
+<!-- 1st Term (+ Whole Year) -->
+<div class="sem-panel subjects-grid active" id="panel_1st_Term">
+  {% set p1 = t1 + wy + na %}
   {% if p1 %}{% for c in p1 %}{{ render_card(c) }}{% endfor %}
-  {% else %}<div class="empty-sem">No subjects for 1st Semester</div>{% endif %}
+  {% else %}<div class="empty-sem">No subjects for 1st Term</div>{% endif %}
 </div>
 
-<!-- 2nd Semester (+ Whole Year) -->
-<div class="sem-panel subjects-grid" id="panel_2nd_Semester">
-  {% set p2 = sem2 + wy + na %}
+<!-- 2nd Term (+ Whole Year) -->
+<div class="sem-panel subjects-grid" id="panel_2nd_Term">
+  {% set p2 = t2 + wy + na %}
   {% if p2 %}{% for c in p2 %}{{ render_card(c) }}{% endfor %}
-  {% else %}<div class="empty-sem">No subjects for 2nd Semester</div>{% endif %}
+  {% else %}<div class="empty-sem">No subjects for 2nd Term</div>{% endif %}
+</div>
+
+<!-- 3rd Term (+ Whole Year) -->
+<div class="sem-panel subjects-grid" id="panel_3rd_Term">
+  {% set p3 = t3 + wy + na %}
+  {% if p3 %}{% for c in p3 %}{{ render_card(c) }}{% endfor %}
+  {% else %}<div class="empty-sem">No subjects for 3rd Term</div>{% endif %}
 </div>
 
 <!-- Whole Year -->

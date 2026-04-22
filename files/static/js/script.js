@@ -56,6 +56,25 @@ function editSubject(id) {
   });
 }
 
+// â”€â”€ SUBJECT â†’ ELIGIBLE TEACHERS â”€â”€
+function editSubjectTeachers(subjectId) {
+  fetch(`/subjects/get/${subjectId}`).then(r => r.json()).then(data => {
+    const title = document.getElementById('st_subject_title');
+    if (title) title.textContent = `${data.subject_name} (${data.subject_code})`;
+
+    const sel = document.getElementById('st_teacher_ids');
+    if (sel) {
+      const selected = new Set((data.teacher_ids || []).map(String));
+      Array.from(sel.options).forEach(opt => { opt.selected = selected.has(String(opt.value)); });
+    }
+
+    const form = document.getElementById('st_form');
+    if (form) form.action = `/subject_teachers/set/${data.id}`;
+
+    openModal('editSubjectTeachersModal');
+  });
+}
+
 // ── EDIT SECTION ──────────────────────────────────────────────
 function editSection(id) {
   fetch(`/sections/get/${id}`).then(r => r.json()).then(data => {

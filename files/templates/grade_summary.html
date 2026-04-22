@@ -26,7 +26,7 @@
   .content-card { box-shadow:none !important; border:none !important; }
 }
 
-/* Semester tabs */
+/* Term tabs */
 .sem-tab-bar { display:flex; gap:8px; margin-bottom:20px; }
 .sem-tab {
   padding:8px 22px; border-radius:99px; font-size:12px; font-weight:700;
@@ -88,17 +88,20 @@
 
 {% block content %}
 
-<!-- Semester tabs -->
+<!-- Term tabs -->
+{% set is_jhs = section.grade_level in ('7', '8', '9', '10') %}
+{% if not is_jhs %}
 <div class="sem-tab-bar print-hide">
-  <a href="{{ url_for('grade_summary', sec_id=section.id, sem='1st Semester') }}"
-     class="sem-tab {{ 'active' if active_sem == '1st Semester' else '' }}">
-    1st Semester
-  </a>
-  <a href="{{ url_for('grade_summary', sec_id=section.id, sem='2nd Semester') }}"
-     class="sem-tab {{ 'active' if active_sem == '2nd Semester' else '' }}">
-    2nd Semester
-  </a>
+  <a href="{{ url_for('grade_summary', sec_id=section.id, sem='1st Term') }}"
+     class="sem-tab {{ 'active' if active_sem == '1st Term' else '' }}">1st Term</a>
+  <a href="{{ url_for('grade_summary', sec_id=section.id, sem='2nd Term') }}"
+     class="sem-tab {{ 'active' if active_sem == '2nd Term' else '' }}">2nd Term</a>
+  <a href="{{ url_for('grade_summary', sec_id=section.id, sem='3rd Term') }}"
+     class="sem-tab {{ 'active' if active_sem == '3rd Term' else '' }}">3rd Term</a>
+  <a href="{{ url_for('grade_summary', sec_id=section.id, sem='Whole Year') }}"
+     class="sem-tab {{ 'active' if active_sem == 'Whole Year' else '' }}">Whole Year</a>
 </div>
+{% endif %}
 
 <!-- Stats -->
 {% set passing_rows   = rows | selectattr('passing') | list %}

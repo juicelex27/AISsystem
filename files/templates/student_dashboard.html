@@ -140,15 +140,19 @@
 
   <!-- Timetable view -->
   <div id="viewTimetable" style="padding:16px;">
-    <div style="display:flex;gap:8px;margin-bottom:14px;">
-      <button class="btn btn-secondary btn-sm stu-sem-btn" data-sem="1st Semester"
-        onclick="switchStudentSem('1st Semester')"
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+      <button class="btn btn-secondary btn-sm stu-sem-btn" data-sem="1st Term"
+        onclick="switchStudentSem('1st Term')"
         style="background:var(--brand-gradient);color:#fff;border-color:transparent;">
-        1st Semester
+        1st Term
       </button>
-      <button class="btn btn-secondary btn-sm stu-sem-btn" data-sem="2nd Semester"
-        onclick="switchStudentSem('2nd Semester')">
-        2nd Semester
+      <button class="btn btn-secondary btn-sm stu-sem-btn" data-sem="2nd Term"
+        onclick="switchStudentSem('2nd Term')">
+        2nd Term
+      </button>
+      <button class="btn btn-secondary btn-sm stu-sem-btn" data-sem="3rd Term"
+        onclick="switchStudentSem('3rd Term')">
+        3rd Term
       </button>
     </div>
     <div id="studentTimetable"></div>
@@ -205,16 +209,25 @@ function showSchedView(view) {
   document.getElementById('btnList').style.cssText       = view === 'list' ? 'background:var(--brand-gradient);color:#fff;border-color:transparent;' : '';
 }
 
+function scopeCoversTerm(scope, term) {
+  if (!term) return true;
+  if (!scope) return true;
+  if (scope === 'Whole Year') return true;
+  if (scope === '1st Semester') return (term === '1st Term' || term === '2nd Term');
+  if (scope === '2nd Semester') return (term === '3rd Term');
+  return scope === term;
+}
+
 function switchStudentSem(sem) {
   document.querySelectorAll('.stu-sem-btn').forEach(b => {
     b.style.cssText = b.dataset.sem === sem ? 'background:var(--brand-gradient);color:#fff;border-color:transparent;' : '';
   });
-  const filtered = studentSchedData.filter(s => !s.sem || s.sem === sem || s.sem === 'Whole Year');
+  const filtered = studentSchedData.filter(s => scopeCoversTerm(s.sem, sem));
   renderTimetable(filtered, 'studentTimetable', null, 'subject_id');
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  switchStudentSem('1st Semester');
+  switchStudentSem('1st Term');
 });
 </script>
 {% endif %}

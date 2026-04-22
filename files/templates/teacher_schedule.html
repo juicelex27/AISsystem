@@ -111,26 +111,26 @@
   </div>
 </div>
 
-<!-- Per-semester stats -->
+<!-- Per-term stats -->
 {% if semesters %}
 <div class="stats-grid">
   {% for sem in semesters %}{% set st = sem_stats[sem] %}
   <div class="stat-card" data-sem-card="{{ sem }}">
-    <div class="stat-icon {{ 'blue' if '1st' in sem else 'purple' }}">
+    <div class="stat-icon {{ 'blue' if sem=='1st Term' else ('purple' if sem=='2nd Term' else 'teal') }}">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zm0 2.27L20 9l-8 4.36L4 9l8-3.73zM5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82z"/></svg>
     </div>
     <div>
       <div class="stat-value">{{ st.sections }}</div>
-      <div class="stat-label">Sections · {{ '1st Sem' if '1st' in sem else '2nd Sem' }}</div>
+      <div class="stat-label">Sections · {{ sem }}</div>
     </div>
   </div>
   <div class="stat-card" data-sem-card="{{ sem }}">
-    <div class="stat-icon {{ 'teal' if '1st' in sem else 'orange' }}">
+    <div class="stat-icon {{ 'teal' if sem=='1st Term' else ('orange' if sem=='2nd Term' else 'purple') }}">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
     </div>
     <div>
       <div class="stat-value">{{ st.classes }}</div>
-      <div class="stat-label">Classes · {{ '1st Sem' if '1st' in sem else '2nd Sem' }}</div>
+      <div class="stat-label">Classes · {{ sem }}</div>
     </div>
   </div>
   {% endfor %}
@@ -171,7 +171,7 @@
       <thead>
         <tr>
           <th>Day</th><th>Time</th><th>Subject</th>
-          <th>Sem</th><th>Section</th><th>Strand</th><th>Room</th>
+          <th>Term</th><th>Section</th><th>Strand</th><th>Room</th>
         </tr>
       </thead>
       <tbody>
@@ -187,8 +187,8 @@
           </td>
           <td>
             {% if sch.semester %}
-            <span class="badge" style="background:{% if sch.semester=='1st Semester' %}#dbeafe;color:#1e40af{% else %}#f3e8ff;color:#7e22ce{% endif %};">
-              {{ '1st' if sch.semester=='1st Semester' else '2nd' }}
+            <span class="badge" style="background:{% if sch.semester=='1st Term' %}#dbeafe;color:#1e40af{% elif sch.semester=='2nd Term' %}#f3e8ff;color:#7e22ce{% elif sch.semester=='3rd Term' %}#dcfce7;color:#166534{% elif sch.semester=='Whole Year' %}#fef9c3;color:#854d0e{% else %}#e0e7ff;color:#3730a3{% endif %};">
+              {{ sch.semester }}
             </span>
             {% else %}<span style="color:var(--text-muted);">—</span>{% endif %}
           </td>
@@ -394,16 +394,25 @@ const scheduleData = [
 
 const semStats = {{ (sem_stats or {}) | tojson }};
 
-// ── SEMESTER TABS ─────────────────────────────────────────────
+function scopeCoversTerm(scope, term) {
+  if (!term) return true;
+  if (!scope) return true;
+  if (scope === 'Whole Year') return true;
+  if (scope === '1st Semester') return (term === '1st Term' || term === '2nd Term');
+  if (scope === '2nd Semester') return (term === '3rd Term');
+  return scope === term;
+}
+
+// ── TERM TABS ─────────────────────────────────────────────────
 function setSemester(sem, btn) {
   document.querySelectorAll('.sem-tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
   const filtered = sem === 'all'
     ? scheduleData
-    : scheduleData.filter(s => s.semester === sem || s.semester === 'Whole Year');
+    : scheduleData.filter(s => scopeCoversTerm(s.semester, sem));
   renderTimetable(filtered, 'timetableContainer', null, 'section_id');
   document.querySelectorAll('.sched-row').forEach(row => {
-    row.style.display = (sem === 'all' || row.dataset.semester === sem || row.dataset.semester === 'Whole Year') ? '' : 'none';
+    row.style.display = (sem === 'all' || scopeCoversTerm(row.dataset.semester, sem)) ? '' : 'none';
   });
   document.querySelectorAll('[data-sem-card]').forEach(card => {
     card.style.opacity   = (sem === 'all' || card.dataset.semCard === sem) ? '1' : '0.25';

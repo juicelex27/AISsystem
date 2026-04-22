@@ -20,6 +20,18 @@
     Auto Create
   </button>
   {% endif %}
+  {% if show_auto_shs_button %}
+  <a class="btn btn-secondary" href="{{ url_for('section_subject_teachers', sec_id=section.id) }}">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+    Subject Teachers
+  </a>
+  <form method="POST" action="{{ url_for('auto_create_schedule_shs', sec_id=section.id) }}" style="display:inline;">
+    <button class="btn btn-warning" type="submit" style="color:#000;">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 13h4v-2H5v2zm0 4h7v-2H5v2zm0-8h11V7H5v2zm13 12h-6v2h6v-2zm0-4h-6v2h6v-2zm0-8v2h-6V7h6z"/></svg>
+      Auto Create (SHS)
+    </button>
+  </form>
+  {% endif %}
   <button class="btn btn-primary" onclick="openAddModal()">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
     Add Entry
@@ -28,14 +40,18 @@
 
 {% block content %}
 
-<!-- ── SEMESTER TABS ── -->
+<!-- ── TERM TABS ── -->
 {% if semesters|length > 1 %}
 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">
   <button class="sem-tab active" onclick="setSemester('all',this)">
     All <span class="sem-count">{{ schedules|length }}</span>
   </button>
   {% for sem in semesters %}
-  {% set sem_count = (schedules | selectattr('semester','equalto',sem) | list | length) + (schedules | selectattr('semester','equalto','Whole Year') | list | length) %}
+  {% set legacy1 = (schedules | selectattr('semester','equalto','1st Semester') | list | length) %}
+  {% set legacy2 = (schedules | selectattr('semester','equalto','2nd Semester') | list | length) %}
+  {% set wy      = (schedules | selectattr('semester','equalto','Whole Year') | list | length) %}
+  {% set direct  = (schedules | selectattr('semester','equalto',sem) | list | length) %}
+  {% set sem_count = direct + wy + (legacy1 if sem in ['1st Term','2nd Term'] else 0) + (legacy2 if sem == '3rd Term' else 0) %}
   <button class="sem-tab" onclick="setSemester('{{ sem }}', this)">
     {{ sem }} <span class="sem-count">{{ sem_count }}</span>
   </button>
@@ -49,7 +65,7 @@
   {% for sem in semesters %}
   <div class="content-card timetable-sem-block" data-sem="{{ sem }}" style="overflow:hidden;">
     <div style="padding:14px 20px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;">
-      <span class="badge" style="font-size:12px;padding:4px 12px;background:{% if sem=='1st Semester' %}#dbeafe;color:#1e40af{% else %}#f3e8ff;color:#7e22ce{% endif %};">{{ sem }}</span>
+      <span class="badge" style="font-size:12px;padding:4px 12px;background:{% if sem=='1st Term' %}#dbeafe;color:#1e40af{% elif sem=='2nd Term' %}#f3e8ff;color:#7e22ce{% elif sem=='3rd Term' %}#dcfce7;color:#166534{% else %}#e0e7ff;color:#3730a3{% endif %};">{{ sem }}</span>
       <span style="font-size:13px;color:var(--text-secondary);">{{ (schedules | selectattr("semester","equalto",sem) | list | length) + (schedules | selectattr("semester","equalto","Whole Year") | list | length) }} entr{{ "ies" if ((schedules | selectattr("semester","equalto",sem) | list | length) + (schedules | selectattr("semester","equalto","Whole Year") | list | length)) != 1 else "y" }}</span>
     </div>
     <div style="padding:16px 20px;"><div id="timetable_{{ loop.index }}"></div></div>
@@ -71,7 +87,7 @@
   <div class="data-table-wrap">
     <table class="data-table">
       <thead>
-        <tr><th>Day</th><th>Time</th><th>Subject</th><th>Semester</th><th>Teacher</th><th>Strand</th><th>Room</th><th>Actions</th></tr>
+        <tr><th>Day</th><th>Time</th><th>Subject</th><th>Term Scope</th><th>Teacher</th><th>Strand</th><th>Room</th><th>Actions</th></tr>
       </thead>
       <tbody>
         {% for sch in schedules %}
@@ -85,8 +101,8 @@
           <td>
             {% set _sem = sch.semester or sch.subject_semester or '' %}
             {% if _sem %}
-            {% set sem_label = '1st & 2nd Semester' if _sem == 'Whole Year' else _sem %}
-            <span class="badge" style="background:{% if _sem=='1st Semester' %}#dbeafe;color:#1e40af{% elif _sem=='2nd Semester' %}#f3e8ff;color:#7e22ce{% elif _sem=='Whole Year' %}#fef9c3;color:#854d0e{% else %}#dcfce7;color:#166534{% endif %};">{{ sem_label }}</span>
+            {% set sem_label = 'All Terms' if _sem == 'Whole Year' else _sem %}
+            <span class="badge" style="background:{% if _sem=='1st Term' %}#dbeafe;color:#1e40af{% elif _sem=='2nd Term' %}#f3e8ff;color:#7e22ce{% elif _sem=='3rd Term' %}#dcfce7;color:#166534{% elif _sem=='Whole Year' %}#fef9c3;color:#854d0e{% else %}#e0e7ff;color:#3730a3{% endif %};">{{ sem_label }}</span>
             {% else %}<span style="color:var(--text-muted);">—</span>{% endif %}
           </td>
           <td>{{ sch.teacher_name }}</td>
@@ -170,17 +186,20 @@
             <div id="wholeYearPicker" style="display:none;margin-top:8px;padding:10px 12px;background:#fef9c3;border:1.5px solid #fde047;border-radius:8px;font-size:12px;color:#854d0e;">
               <div style="font-weight:700;margin-bottom:7px;display:flex;align-items:center;gap:5px;">
                 <svg viewBox="0 0 24 24" fill="#854d0e" style="width:13px;height:13px;flex-shrink:0;"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
-                Whole Year subject — select which semester:
+                Whole Year subject — select which term:
               </div>
               <div style="display:flex;gap:14px;flex-wrap:wrap;">
                 <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-weight:600;">
-                  <input type="radio" name="semester_override" id="wy_1st" value="1st Semester" style="accent-color:#854d0e;" onchange="scheduleCheck()"> 1st Semester
+                  <input type="radio" name="semester_override" id="wy_1st" value="1st Term" style="accent-color:#854d0e;" onchange="scheduleCheck()"> 1st Term
                 </label>
                 <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-weight:600;">
-                  <input type="radio" name="semester_override" id="wy_2nd" value="2nd Semester" style="accent-color:#854d0e;" onchange="scheduleCheck()"> 2nd Semester
+                  <input type="radio" name="semester_override" id="wy_2nd" value="2nd Term" style="accent-color:#854d0e;" onchange="scheduleCheck()"> 2nd Term
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-weight:600;">
+                  <input type="radio" name="semester_override" id="wy_3rd" value="3rd Term" style="accent-color:#854d0e;" onchange="scheduleCheck()"> 3rd Term
                 </label>
               </div>
-              <div style="margin-top:6px;color:#92400e;font-size:11px;">⚠️ You must select a semester before saving.</div>
+              <div style="margin-top:6px;color:#92400e;font-size:11px;">⚠️ You must select a term before saving.</div>
             </div>
           </div>
         </div>
@@ -192,9 +211,9 @@
               <option value="">Select a teacher</option>
               {% for t in teachers %}<option value="{{ t.id }}">{{ t.first_name }} {{ t.last_name }}</option>{% endfor %}
             </select>
-            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="loadSubjectTeachers()" style="white-space:nowrap;">Find teacher</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="loadSubjectTeachers(true)" style="white-space:nowrap;">Find teacher</button>
           </div>
-          <div id="subjectTeacherInfo" style="font-size:12px;color:var(--text-muted);margin-top:6px;">If the chosen subject has an assigned teacher, it will be selected automatically.</div>
+          <div id="subjectTeacherInfo" style="font-size:12px;color:var(--text-muted);margin-top:6px;">If the chosen subject has eligible teacher(s), one may be selected automatically.</div>
           <div id="workloadBar" style="display:none;margin-top:8px;padding:8px 12px;border-radius:8px;font-size:12px;align-items:center;gap:10px;background:#f0f9ff;border:1px solid #bae6fd;">
             <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;flex-shrink:0;color:#0284c7;"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
             <div style="flex:1;">
@@ -448,8 +467,9 @@
     </div>
     <div class="modal-footer">
       <button type="button" class="btn btn-secondary" onclick="closeModal('flushModal')">Cancel</button>
-      <form method="POST" action="{{ url_for('flush_schedule', sec_id=section.id) }}" style="display:inline;">
-        <button type="submit" class="btn btn-danger">
+      <form method="POST" action="{{ url_for('bulk_flush_schedules') }}" style="display:inline;">
+  <input type="hidden" name="section_ids" value="{{ section.id }}">
+  <button type="submit" class="btn btn-danger">
           <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
           Yes, Clear All
         </button>
@@ -492,7 +512,16 @@ const scheduleData = [
 ];
 const SEMESTERS = {{ semesters|tojson }};
 
-// ── SEMESTER FILTER ────────────────────────────────────────────
+function scopeCoversTerm(scope, term) {
+  if (!term) return true;
+  if (!scope) return true;
+  if (scope === 'Whole Year') return true;
+  if (scope === '1st Semester') return (term === '1st Term' || term === '2nd Term');
+  if (scope === '2nd Semester') return (term === '3rd Term');
+  return scope === term;
+}
+
+// ── TERM FILTER ────────────────────────────────────────────────
 function setSemester(sem, btn) {
   document.querySelectorAll('.sem-tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
@@ -502,16 +531,16 @@ function setSemester(sem, btn) {
       b.style.display = (sem === 'all' || b.dataset.sem === sem) ? '' : 'none';
     });
   } else {
-    const filtered = sem === 'all' ? scheduleData : scheduleData.filter(s => s.semester === sem || s.semester === 'Whole Year');
+    const filtered = sem === 'all' ? scheduleData : scheduleData.filter(s => scopeCoversTerm(s.semester, sem));
     renderTimetable(filtered, 'timetableContainer', DELETE_BASE);
   }
 
   document.querySelectorAll('.sched-row').forEach(row => {
     const rs = row.dataset.semester;
-    row.style.display = (sem === 'all' || rs === sem || rs === 'Whole Year') ? '' : 'none';
+    row.style.display = (sem === 'all' || scopeCoversTerm(rs, sem)) ? '' : 'none';
   });
 
-  const visible = sem === 'all' ? scheduleData.length : scheduleData.filter(s => s.semester === sem || s.semester === 'Whole Year').length;
+  const visible = sem === 'all' ? scheduleData.length : scheduleData.filter(s => scopeCoversTerm(s.semester, sem)).length;
   const h = document.getElementById('listHeading');
   if (h) h.innerHTML = `${sem === 'all' ? 'Schedule Entries' : 'Schedule Entries — ' + sem} <span style="font-weight:400;color:#6b7280;font-size:14px;">(${visible})</span>`;
 }
@@ -519,9 +548,9 @@ function setSemester(sem, btn) {
 // ── TIMETABLE INIT ─────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   if (SEMESTERS.length > 1) {
-    // Each semester timetable INCLUDES Whole Year entries
+    // Each term timetable INCLUDES scopes that cover that term
     SEMESTERS.forEach((sem, i) => {
-      const semData = scheduleData.filter(s => s.semester === sem || s.semester === 'Whole Year');
+      const semData = scheduleData.filter(s => scopeCoversTerm(s.semester, sem));
       renderTimetable(semData, `timetable_${i + 1}`, DELETE_BASE);
     });
   } else {
@@ -565,13 +594,13 @@ document.getElementById('sch_strand_id').addEventListener('change', async functi
     document.getElementById('subjectHint').textContent = data.length ? `${data.length} subject(s) in this strand.` : 'No subjects assigned to this strand yet.';
   } catch(_) { document.getElementById('sch_subject_id').innerHTML = '<option value="">Error loading subjects</option>'; }
   checkWholeYearNote();
-  loadSubjectTeachers();
+  loadSubjectTeachers(false);
   scheduleCheck();
 });
 
 document.getElementById('sch_subject_id').addEventListener('change', function() {
   checkWholeYearNote();
-  loadSubjectTeachers();
+  loadSubjectTeachers(false);
 });
 
 function checkWholeYearNote() {
@@ -594,11 +623,11 @@ function checkWholeYearNote() {
   scheduleCheck();
 }
 
-async function loadSubjectTeachers() {
+async function loadSubjectTeachers(promptIfMultiple = false) {
   const subId = parseInt(document.getElementById('sch_subject_id').value);
   const info = document.getElementById('subjectTeacherInfo');
   if (!subId) {
-    info.textContent = 'If the chosen subject has an assigned teacher, it will be selected automatically.';
+    info.textContent = 'If the chosen subject has eligible teacher(s), one may be selected automatically.';
     return;
   }
 
@@ -607,7 +636,7 @@ async function loadSubjectTeachers() {
     if (!res.ok) throw new Error('Failed to fetch teacher assignments');
     const teachers = await res.json();
     if (!teachers.length) {
-      info.textContent = 'No assigned teacher found for this subject. Please select one manually.';
+      info.textContent = 'No eligible teacher set for this subject. Please select one manually.';
       return;
     }
     if (teachers.length === 1) {
@@ -632,10 +661,16 @@ async function loadSubjectTeachers() {
       });
       list.appendChild(button);
     });
-    openModal('subjectTeacherModal');
-    info.textContent = `${teachers.length} assigned teachers found. Please choose one.`;
+    if (promptIfMultiple) {
+      openModal('subjectTeacherModal');
+      info.textContent = `${teachers.length} eligible teachers found. Please choose one.`;
+    } else {
+      // Clear any stale selection from a previous subject.
+      document.getElementById('sch_teacher_id').value = '';
+      info.textContent = `${teachers.length} eligible teachers found. Click "Find teacher" to choose.`;
+    }
   } catch (err) {
-    info.textContent = 'Unable to retrieve teacher assignments. Select a teacher manually.';
+    info.textContent = 'Unable to retrieve eligible teachers. Select a teacher manually.';
   }
 }
 
@@ -776,7 +811,7 @@ function setSubmitState(state) {
   if (state==='ready')      { submitBtn.disabled=false; submitBtn.classList.add('btn-primary'); submitLabel.textContent='Add to Schedule'; }
   else if (state==='warn')  { submitBtn.classList.add('btn-primary'); submitLabel.textContent='Add to Schedule'; updateForceState(); }
   else if (state==='blocked') { submitBtn.classList.add('btn-danger'); submitLabel.textContent='Fix Errors First'; }
-  else if (state==='wy_pending') { submitBtn.classList.add('btn-primary'); submitLabel.textContent='Select a Semester First'; }
+  else if (state==='wy_pending') { submitBtn.classList.add('btn-primary'); submitLabel.textContent='Select a Term First'; }
   else { submitBtn.classList.add('btn-primary'); submitLabel.textContent='Add to Schedule'; }
 }
 forceCheck.addEventListener('change', updateForceState);
@@ -831,7 +866,7 @@ function openAutoScheduleModal() {
 
   AUTO_JHS_SUBJECTS.forEach(sub => {
     const isESP = /ESP/i.test(sub.subject_code || sub.subject_name);
-    const isAssigned = sub.teacher_id && sub.teacher_id !== '';
+    const isAssigned = sub.assigned_teacher_id && sub.assigned_teacher_id !== '';
     const isScheduled = sub.schedule_id && sub.schedule_id !== '';
     const isLocked = isAssigned || isScheduled;
     // ESP subjects cannot be homeroom
@@ -860,7 +895,7 @@ function openAutoScheduleModal() {
         <div style="display:flex;flex-direction:column;gap:8px;">
           <label style="font-size:13px;font-weight:600;color:#0f172a;">Teacher ${isLocked ? '<span style="color:#dc2626;">(Locked)</span>' : ''}</label>
           <div style="position:relative;">
-            <input type="text" class="form-control auto-teacher-input" ${isLocked ? 'disabled' : ''} ${!isLocked ? 'required' : ''} placeholder="Search teacher..." value="${isLocked && sub.teacher_first ? `${sub.teacher_first} ${sub.teacher_last}` : ''}" data-subject-id="${sub.subject_id}" data-teacher-id="${sub.teacher_id || ''}">
+            <input type="text" class="form-control auto-teacher-input" ${isLocked ? 'disabled' : ''} ${!isLocked ? 'required' : ''} placeholder="Search teacher..." value="${sub.teacher_first ? `${sub.teacher_first} ${sub.teacher_last}` : ''}" data-subject-id="${sub.subject_id}" data-teacher-id="${sub.teacher_id || ''}">
             <input type="hidden" class="auto-teacher-id" value="${sub.teacher_id || ''}">
             <div class="teacher-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;background:white;border:1px solid #ccc;max-height:200px;overflow-y:auto;z-index:1000;border-radius:4px;box-shadow:0 2px 4px rgba(0,0,0,0.1);"></div>
           </div>
@@ -931,6 +966,12 @@ function handleTeacherSearch(e) {
   const query = input.value.toLowerCase().trim();
   const suggestionsDiv = input.parentElement.querySelector('.teacher-suggestions');
   const hiddenInput = input.parentElement.querySelector('.auto-teacher-id');
+
+  // If user starts typing, clear the hidden teacher id until a suggestion is selected.
+  if (e.type === 'input') {
+    if (hiddenInput) hiddenInput.value = '';
+    input.dataset.teacherId = '';
+  }
 
   if (query.length === 0) {
     suggestionsDiv.style.display = 'none';
@@ -1124,7 +1165,7 @@ function openEditModal(sch) {
     s.teacher_id === sch.teacher_id &&
     s.day === sch.day &&
     s.semester !== sch.semester &&
-    (s.semester === '1st Semester' || s.semester === '2nd Semester')
+    ['1st Term','2nd Term','3rd Term','1st Semester','2nd Semester'].includes(s.semester)
   );
 
   // Apply field locks

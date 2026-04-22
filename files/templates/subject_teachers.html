@@ -1,0 +1,155 @@
+{% extends "layout.html" %}
+{% block title %}Subject Teachers{% endblock %}
+{% block page_title %}Subject Teachers{% endblock %}
+{% block page_subtitle %}Manage eligible teacher(s) per subject for scheduling suggestions{% endblock %}
+{% block header_actions %}
+  <a href="{{ url_for('subjects') }}" class="btn btn-secondary">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 19l-7-7 7-7v4h11v6H10v4z"/></svg>
+    Back to Subjects
+  </a>
+{% endblock %}
+
+{% block content %}
+<div class="content-card">
+  <div class="card-header">
+    <h2>Subjects <span id="stCount" style="font-weight:400;color:#6b7280;font-size:14px;">({{ subjects|length }})</span></h2>
+  </div>
+
+  {% if subjects %}
+  <div class="card-body" style="padding-bottom:0;">
+    <div class="form-row" style="grid-template-columns:1fr 220px;">
+      <div class="form-group" style="margin-bottom:0;">
+        <label>Search</label>
+        <input id="stSearch" class="form-control" placeholder="Search subject, code, teacher…">
+      </div>
+      <div class="form-group" style="margin-bottom:0;">
+        <label>Grade</label>
+        <select id="stGrade" class="form-control">
+          <option value="">All</option>
+          {% for grp in subjects|groupby('grade_level') %}
+            <option value="{{ grp.grouper }}">Grade {{ grp.grouper }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="card-body">
+    <div class="sections-grid" id="stGrid">
+      {% for s in subjects %}
+      {% set search_blob = (s.subject_name ~ ' ' ~ s.subject_code ~ ' ' ~ (s.teacher_names or '') ~ ' ' ~ (s.strand or '') ~ ' ' ~ (s.semester or '') ~ ' grade ' ~ s.grade_level) %}
+      <div class="section-card st-card"
+           data-grade="{{ s.grade_level }}"
+           data-search="{{ search_blob|lower }}">
+        <div class="section-card-header">
+          <div class="section-grade-badge">
+            Grade {{ s.grade_level }}{% if s.semester %} • {{ s.semester }}{% endif %}
+          </div>
+          <div class="section-name">{{ s.subject_name }}</div>
+          <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">
+            <span class="badge badge-section">{{ s.subject_code }}</span>
+            {% if s.strand %}<span class="badge badge-strand">{{ s.strand }}</span>{% endif %}
+          </div>
+        </div>
+
+        <div class="section-card-body">
+          <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;">Eligible Teachers</div>
+          {% if s.teacher_names %}
+            <div style="display:flex;flex-wrap:wrap;gap:6px;">
+              {% for name in s.teacher_names.split(', ') %}
+                <span class="badge" style="background:rgba(160,24,80,.08);color:rgba(160,24,80,1);border:1px solid rgba(160,24,80,.18);">{{ name }}</span>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div style="color:var(--text-muted);font-size:13px;">No eligible teachers set.</div>
+          {% endif %}
+        </div>
+
+        <div class="section-card-footer">
+          <div class="section-meta">
+            <svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+            <span>{{ (s.teacher_names.split(', ')|length) if s.teacher_names else 0 }} teacher(s)</span>
+          </div>
+          <div class="section-card-actions">
+            <button class="btn btn-secondary btn-sm" type="button" onclick="editSubjectTeachers({{ s.id }})">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+              Edit
+            </button>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/></svg>
+    <h3>No subjects yet</h3>
+    <p>Add subjects first, then assign eligible teachers here.</p>
+  </div>
+  {% endif %}
+</div>
+
+<!-- EDIT SUBJECT TEACHERS MODAL -->
+<div class="modal-overlay" id="editSubjectTeachersModal">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-header">
+      <div>
+        <h3 style="margin:0;">Eligible Teachers</h3>
+        <div id="st_subject_title" style="margin-top:4px;color:var(--text-muted);font-size:13px;"></div>
+      </div>
+      <button class="modal-close" onclick="closeModal('editSubjectTeachersModal')">×</button>
+    </div>
+    <form id="st_form" method="POST" action="">
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Select Teacher(s) <span style="color:#9ca3af;font-weight:400;">(multiple)</span></label>
+          <select id="st_teacher_ids" name="teacher_ids" class="form-control" multiple size="10">
+            {% for t in teachers %}
+              <option value="{{ t.id }}">{{ t.first_name }} {{ t.last_name }}</option>
+            {% endfor %}
+          </select>
+          <div style="margin-top:6px;font-size:12px;color:var(--text-muted);">Tip: hold Ctrl (Windows) / Cmd (Mac) to select multiple teachers.</div>
+        </div>
+        <div style="font-size:12px;color:var(--text-muted);line-height:1.5;">
+          Used as suggestions when assigning schedules. If multiple eligible teachers exist, you will choose one during scheduling.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('editSubjectTeachersModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  function applySubjectTeacherFilters() {
+    const searchEl = document.getElementById('stSearch');
+    const gradeEl  = document.getElementById('stGrade');
+    const q = (searchEl ? searchEl.value : '').toLowerCase().trim();
+    const g = (gradeEl ? gradeEl.value : '').trim();
+    const cards = Array.from(document.querySelectorAll('.st-card'));
+
+    let visible = 0;
+    cards.forEach(card => {
+      const gradeOk = !g || (card.dataset.grade === g);
+      const searchOk = !q || ((card.dataset.search || '').includes(q));
+      const show = gradeOk && searchOk;
+      card.style.display = show ? '' : 'none';
+      if (show) visible += 1;
+    });
+
+    const c = document.getElementById('stCount');
+    if (c) c.textContent = `(${visible})`;
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const s = document.getElementById('stSearch');
+    const g = document.getElementById('stGrade');
+    if (s) s.addEventListener('input', applySubjectTeacherFilters);
+    if (g) g.addEventListener('change', applySubjectTeacherFilters);
+    applySubjectTeacherFilters();
+  });
+</script>
+{% endblock %}

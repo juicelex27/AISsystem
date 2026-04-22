@@ -63,14 +63,18 @@
   </div>
   {% if sec_id %}
   <div style="padding:10px 20px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;">
-    <span style="font-size:12px;font-weight:600;color:var(--text-muted);">Semester:</span>
-    <a href="{{ url_for('honor_roll', section_id=sec_id, sem='1st Semester') }}"
-       style="padding:5px 16px;border-radius:99px;font-size:12px;font-weight:700;text-decoration:none;border:1.5px solid {{ '#a01850' if active_sem=='1st Semester' else 'var(--border)' }};background:{{ 'var(--brand-gradient)' if active_sem=='1st Semester' else '#fff' }};color:{{ '#fff' if active_sem=='1st Semester' else 'var(--text-secondary)' }};">
-      1st Semester
+    <span style="font-size:12px;font-weight:600;color:var(--text-muted);">Term:</span>
+    <a href="{{ url_for('honor_roll', section_id=sec_id, sem='1st Term') }}"
+       style="padding:5px 16px;border-radius:99px;font-size:12px;font-weight:700;text-decoration:none;border:1.5px solid {{ '#a01850' if active_sem=='1st Term' else 'var(--border)' }};background:{{ 'var(--brand-gradient)' if active_sem=='1st Term' else '#fff' }};color:{{ '#fff' if active_sem=='1st Term' else 'var(--text-secondary)' }};">
+      1st Term
     </a>
-    <a href="{{ url_for('honor_roll', section_id=sec_id, sem='2nd Semester') }}"
-       style="padding:5px 16px;border-radius:99px;font-size:12px;font-weight:700;text-decoration:none;border:1.5px solid {{ '#a01850' if active_sem=='2nd Semester' else 'var(--border)' }};background:{{ 'var(--brand-gradient)' if active_sem=='2nd Semester' else '#fff' }};color:{{ '#fff' if active_sem=='2nd Semester' else 'var(--text-secondary)' }};">
-      2nd Semester
+    <a href="{{ url_for('honor_roll', section_id=sec_id, sem='2nd Term') }}"
+       style="padding:5px 16px;border-radius:99px;font-size:12px;font-weight:700;text-decoration:none;border:1.5px solid {{ '#a01850' if active_sem=='2nd Term' else 'var(--border)' }};background:{{ 'var(--brand-gradient)' if active_sem=='2nd Term' else '#fff' }};color:{{ '#fff' if active_sem=='2nd Term' else 'var(--text-secondary)' }};">
+      2nd Term
+    </a>
+    <a href="{{ url_for('honor_roll', section_id=sec_id, sem='3rd Term') }}"
+       style="padding:5px 16px;border-radius:99px;font-size:12px;font-weight:700;text-decoration:none;border:1.5px solid {{ '#a01850' if active_sem=='3rd Term' else 'var(--border)' }};background:{{ 'var(--brand-gradient)' if active_sem=='3rd Term' else '#fff' }};color:{{ '#fff' if active_sem=='3rd Term' else 'var(--text-secondary)' }};">
+      3rd Term
     </a>
     <span style="font-size:12px;color:var(--text-muted);margin-left:4px;">— grades reflect current {{ active_sem }} records</span>
   </div>

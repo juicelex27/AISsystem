@@ -57,7 +57,26 @@ def init_db():
             subject_name TEXT NOT NULL,
             grade_level TEXT NOT NULL,
             strand TEXT,
-            semester TEXT
+            semester TEXT,
+            shs_type TEXT,
+            default_teacher_id INTEGER,
+            FOREIGN KEY (default_teacher_id) REFERENCES teachers(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS subject_teachers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject_id INTEGER NOT NULL,
+            teacher_id INTEGER NOT NULL,
+            UNIQUE(subject_id, teacher_id),
+            FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE,
+            FOREIGN KEY (teacher_id) REFERENCES teachers(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS subject_section_offerings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject_id INTEGER NOT NULL,
+            section_id INTEGER NOT NULL,
+            UNIQUE(subject_id, section_id),
+            FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE,
+            FOREIGN KEY (section_id) REFERENCES sections(id) ON DELETE CASCADE
         );
         CREATE TABLE IF NOT EXISTS strands (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,6 +210,74 @@ def init_db():
     except Exception:
         pass  # Column already exists
     try:
+        conn.execute("ALTER TABLE subjects ADD COLUMN default_teacher_id INTEGER")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE subjects ADD COLUMN shs_type TEXT")
+    except Exception:
+        pass
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS subject_teachers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject_id INTEGER NOT NULL,
+                teacher_id INTEGER NOT NULL,
+                UNIQUE(subject_id, teacher_id),
+                FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE,
+                FOREIGN KEY (teacher_id) REFERENCES teachers(id) ON DELETE CASCADE
+            )
+        """)
+    except Exception:
+        pass
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS subject_section_offerings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject_id INTEGER NOT NULL,
+                section_id INTEGER NOT NULL,
+                UNIQUE(subject_id, section_id),
+                FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE,
+                FOREIGN KEY (section_id) REFERENCES sections(id) ON DELETE CASCADE
+            )
+        """)
+    except Exception:
+        pass
+    # Seed legacy single default teacher into the new multi-teacher table (if any)
+    try:
+        conn.execute("""
+            INSERT OR IGNORE INTO subject_teachers (subject_id, teacher_id)
+            SELECT id, default_teacher_id
+            FROM subjects
+            WHERE default_teacher_id IS NOT NULL
+        """)
+        conn.commit()
+    except Exception:
+        pass
+
+    # Migrate existing JHS "assigned teachers" into subject_teachers so Subjects page
+    # and scheduling suggestions are pre-populated.
+    # Source of truth remains per-section assignments/schedules; this just builds the eligible set per subject.
+    try:
+        jhs_levels = ('Grade 7', 'Grade 8', 'Grade 9', 'Grade 10')
+        conn.execute(f"""
+            INSERT OR IGNORE INTO subject_teachers (subject_id, teacher_id)
+            SELECT DISTINCT a.subject_id, a.teacher_id
+            FROM assignments a
+            JOIN sections sec ON sec.id = a.section_id
+            WHERE sec.grade_level IN ({','.join('?' for _ in jhs_levels)})
+        """, jhs_levels)
+        conn.execute(f"""
+            INSERT OR IGNORE INTO subject_teachers (subject_id, teacher_id)
+            SELECT DISTINCT sc.subject_id, sc.teacher_id
+            FROM schedules sc
+            JOIN sections sec ON sec.id = sc.section_id
+            WHERE sec.grade_level IN ({','.join('?' for _ in jhs_levels)})
+        """, jhs_levels)
+        conn.commit()
+    except Exception:
+        pass
+    try:
         conn.execute("ALTER TABLE students ADD COLUMN password TEXT")
     except Exception:
         pass
@@ -241,11 +328,11 @@ def init_db():
         empty_sub_rows = conn.execute(
             "SELECT DISTINCT gs.subject_id, gs.section_id FROM grade_submissions gs "
             "JOIN subjects sub ON gs.subject_id=sub.id "
-            "WHERE gs.semester='' AND sub.semester IN ('1st Semester','2nd Semester')"
+            "WHERE gs.semester='' AND sub.semester IN ('1st Term','2nd Term','3rd Term','1st Semester','2nd Semester')"
         ).fetchall()
         for row in empty_sub_rows:
             sub = conn.execute("SELECT semester FROM subjects WHERE id=?", (row['subject_id'],)).fetchone()
-            if sub and sub['semester'] in ('1st Semester', '2nd Semester'):
+            if sub and sub['semester'] in ('1st Term', '2nd Term', '3rd Term', '1st Semester', '2nd Semester'):
                 conn.execute(
                     "UPDATE grade_submissions SET semester=? WHERE subject_id=? AND section_id=? AND semester=''",
                     (sub['semester'], row['subject_id'], row['section_id'])
@@ -321,7 +408,7 @@ def init_db():
             "SELECT DISTINCT g.student_id, g.subject_id, g.section_id, g.quarter "
             "FROM grades g "
             "JOIN subjects sub ON g.subject_id = sub.id "
-            "WHERE g.semester='' AND sub.semester IN ('1st Semester','2nd Semester')"
+            "WHERE g.semester='' AND sub.semester IN ('1st Term','2nd Term','3rd Term','1st Semester','2nd Semester')"
         ).fetchall()
         for row in empty_grades:
             sub = conn.execute("SELECT semester FROM subjects WHERE id=?", (row['subject_id'],)).fetchone()
@@ -530,7 +617,7 @@ def init_db():
                 else:
                     conn.execute("UPDATE grading_period_settings SET period=? WHERE id=?", (new, row['id']))
 
-        for sem in ('1st Semester', '2nd Semester', 'Whole Year'):
+        for sem in ('1st Term', '2nd Term', '3rd Term', 'Whole Year', '1st Semester', '2nd Semester'):
             for period in ('1st Term', '2nd Term', '3rd Term'):
                 rows = conn.execute(
                     "SELECT id FROM grading_period_settings WHERE semester=? AND period=? ORDER BY is_open DESC, id",
@@ -545,7 +632,7 @@ def init_db():
 
     # Add semester column to grading_period_settings if missing
     try:
-        conn.execute("ALTER TABLE grading_period_settings ADD COLUMN semester TEXT DEFAULT '1st Semester'")
+        conn.execute("ALTER TABLE grading_period_settings ADD COLUMN semester TEXT DEFAULT '1st Term'")
     except Exception:
         pass
     # Seed grading period settings for SHS semesters and JHS terms
@@ -581,14 +668,18 @@ def init_db():
             "ALTER TABLE grading_period_settings_new RENAME TO grading_period_settings;"
         )
 
-    # Periods for each semester
+    # Periods for each term scope (plus legacy semester scopes).
     period_semesters = [
-        ('1st Term', '1st Semester', 1),
-        ('2nd Term', '1st Semester', 0),
-        ('3rd Term', '2nd Semester', 0),
+        ('1st Term', '1st Term', 1),
+        ('2nd Term', '2nd Term', 0),
+        ('3rd Term', '3rd Term', 0),
         ('1st Term', 'Whole Year', 1),
         ('2nd Term', 'Whole Year', 0),
         ('3rd Term', 'Whole Year', 0),
+        # legacy
+        ('1st Term', '1st Semester', 1),
+        ('2nd Term', '1st Semester', 0),
+        ('3rd Term', '2nd Semester', 0),
     ]
     for period, sem, default_open in period_semesters:
         existing = conn.execute(
@@ -799,33 +890,27 @@ def teachers():
     conn = get_db()
     tlist = conn.execute("SELECT * FROM teachers ORDER BY last_name").fetchall()
 
-    # Per-teacher workload: count distinct sections per semester.
-    # Whole Year entries count toward BOTH semesters.
+    # Per-teacher workload: count distinct sections per term (scope-aware).
     workload_rows = conn.execute("""
-        SELECT sc.teacher_id,
-               COALESCE(sc.semester, sub.semester) AS sem,
-               COUNT(DISTINCT sc.section_id) AS cnt
+        SELECT DISTINCT sc.teacher_id,
+               sc.section_id,
+               COALESCE(NULLIF(sc.semester,''), sub.semester) AS scope
         FROM schedules sc
         JOIN subjects sub ON sc.subject_id = sub.id
-        GROUP BY sc.teacher_id, COALESCE(sc.semester, sub.semester)
     """).fetchall()
 
-    # Build base map from direct semester rows
-    raw_map = {}
+    per_teacher_term_sections = {}
     for r in workload_rows:
-        raw_map.setdefault(r['teacher_id'], {})[r['sem'] or ''] = r['cnt']
+        tid = r['teacher_id']
+        per_teacher_term_sections.setdefault(tid, {t: set() for t in ALL_TERMS})
+        scope = (r['scope'] or '').strip()
+        for t in SEM_TERMS.get(scope, ALL_TERMS):
+            if t in per_teacher_term_sections[tid]:
+                per_teacher_term_sections[tid][t].add(str(r['section_id']))
 
-    # For Whole Year entries, add their section counts into both 1st and 2nd
     workload_map = {}
-    for tid, sems in raw_map.items():
-        workload_map[tid] = {
-            '1st Semester': sems.get('1st Semester', 0),
-            '2nd Semester': sems.get('2nd Semester', 0),
-        }
-        wy = sems.get('Whole Year', 0)
-        if wy:
-            workload_map[tid]['1st Semester'] += wy
-            workload_map[tid]['2nd Semester'] += wy
+    for tid, term_sets in per_teacher_term_sections.items():
+        workload_map[tid] = {t: len(sids) for t, sids in term_sets.items()}
 
     conn.close()
     return render_template('teachers.html',
@@ -866,6 +951,10 @@ def edit_teacher(tid):
 @login_required
 def delete_teacher(tid):
     conn = get_db()
+    try:
+        conn.execute("UPDATE subjects SET default_teacher_id=NULL WHERE default_teacher_id=?", (tid,))
+    except Exception:
+        pass
     conn.execute("DELETE FROM teachers WHERE id=?", (tid,))
     conn.commit(); conn.close()
     flash('Teacher deleted.', 'success')
@@ -893,7 +982,8 @@ def teacher_schedule(tid):
     schedules_list = conn.execute("""
         SELECT sc.id, sc.section_id, sc.subject_id, sc.teacher_id,
                sc.day, sc.time_start, sc.time_end, sc.room,
-               sub.subject_name, sub.subject_code, sub.semester,
+               sub.subject_name, sub.subject_code,
+               COALESCE(NULLIF(sc.semester,''), sub.semester) AS semester,
                sec.section_name, sec.grade_level,
                st.strand_code
         FROM schedules sc
@@ -917,15 +1007,17 @@ def teacher_schedule(tid):
     days_active    = len(set(s['day']        for s in schedules_list))
     sections_count = len(set(s['section_id'] for s in schedules_list))
  
-    # Exclude 'Whole Year' from semester tabs — those entries appear in both views
-    semesters_present = sorted({
-        s['semester'] for s in schedules_list
-        if s['semester'] and s['semester'] != 'Whole Year'
-    })
+    # Build term tabs from each row's scope.
+    terms_present = set()
+    for s in schedules_list:
+        scope = (s['semester'] or '').strip()
+        for t in SEM_TERMS.get(scope, []):
+            terms_present.add(t)
+    semesters_present = sorted(terms_present)
     sem_stats = {}
     for sem in semesters_present:
-        # Include Whole Year entries in each semester's count
-        sem_rows = [s for s in schedules_list if s['semester'] in (sem, 'Whole Year')]
+        # Include entries whose scope covers this term.
+        sem_rows = [s for s in schedules_list if sem in SEM_TERMS.get((s['semester'] or '').strip(), [])]
         sem_stats[sem] = {
             'classes':  len(sem_rows),
             'days':     len(set(s['day']        for s in sem_rows)),
@@ -964,8 +1056,10 @@ def subjects():
 def add_subject():
     d = request.form
     conn = get_db()
-    conn.execute("INSERT INTO subjects (subject_code,subject_name,grade_level,strand,semester) VALUES (?,?,?,?,?)",
-                 (d['subject_code'],d['subject_name'],d['grade_level'],d.get('strand',''),d.get('semester','')))
+    conn.execute(
+        "INSERT INTO subjects (subject_code,subject_name,grade_level,strand,semester,default_teacher_id) VALUES (?,?,?,?,?,?)",
+        (d['subject_code'], d['subject_name'], d['grade_level'], d.get('strand',''), d.get('semester',''), None)
+    )
     conn.commit(); conn.close()
     flash('Subject added successfully.', 'success')
     return redirect(url_for('subjects'))
@@ -975,11 +1069,55 @@ def add_subject():
 def edit_subject(sid):
     d = request.form
     conn = get_db()
-    conn.execute("UPDATE subjects SET subject_code=?,subject_name=?,grade_level=?,strand=?,semester=? WHERE id=?",
-                 (d['subject_code'],d['subject_name'],d['grade_level'],d.get('strand',''),d.get('semester',''),sid))
+    conn.execute(
+        "UPDATE subjects SET subject_code=?,subject_name=?,grade_level=?,strand=?,semester=?,default_teacher_id=? WHERE id=?",
+        (d['subject_code'], d['subject_name'], d['grade_level'], d.get('strand',''), d.get('semester',''), None, sid)
+    )
     conn.commit(); conn.close()
     flash('Subject updated.', 'success')
     return redirect(url_for('subjects'))
+
+
+@app.route('/subject_teachers')
+@login_required
+def subject_teachers():
+    conn = get_db()
+    subjects_list = conn.execute("""
+        SELECT sub.id, sub.subject_code, sub.subject_name, sub.grade_level, sub.strand, sub.semester,
+               COALESCE((
+                   SELECT GROUP_CONCAT(name, ', ')
+                   FROM (
+                       SELECT t.first_name || ' ' || t.last_name AS name
+                       FROM subject_teachers st
+                       JOIN teachers t ON t.id = st.teacher_id
+                       WHERE st.subject_id = sub.id
+                       ORDER BY t.last_name, t.first_name
+                   )
+               ), '') AS teacher_names
+        FROM subjects sub
+        ORDER BY sub.grade_level, sub.subject_name
+    """).fetchall()
+    teachers_list = conn.execute(
+        "SELECT id, first_name, last_name FROM teachers ORDER BY last_name, first_name"
+    ).fetchall()
+    conn.close()
+    return render_template('subject_teachers.html', subjects=subjects_list, teachers=teachers_list)
+
+
+@app.route('/subject_teachers/set/<int:sid>', methods=['POST'])
+@login_required
+def set_subject_teachers(sid):
+    teacher_ids = [int(x) for x in request.form.getlist('teacher_ids') if str(x).isdigit()]
+    conn = get_db()
+    conn.execute("DELETE FROM subject_teachers WHERE subject_id=?", (sid,))
+    for tid in sorted(set(teacher_ids)):
+        conn.execute(
+            "INSERT OR IGNORE INTO subject_teachers (subject_id, teacher_id) VALUES (?, ?)",
+            (sid, tid)
+        )
+    conn.commit(); conn.close()
+    flash('Eligible teacher(s) updated for this subject.', 'success')
+    return redirect(url_for('subject_teachers'))
 
 @app.route('/subjects/delete/<int:sid>', methods=['POST'])
 @login_required
@@ -995,8 +1133,79 @@ def delete_subject(sid):
 def get_subject(sid):
     conn = get_db()
     s = conn.execute("SELECT * FROM subjects WHERE id=?", (sid,)).fetchone()
+    tids = conn.execute(
+        "SELECT teacher_id FROM subject_teachers WHERE subject_id=? ORDER BY teacher_id",
+        (sid,)
+    ).fetchall()
+    sec_ids = conn.execute(
+        "SELECT section_id FROM subject_section_offerings WHERE subject_id=? ORDER BY section_id",
+        (sid,)
+    ).fetchall()
     conn.close()
-    return jsonify(dict(s)) if s else (jsonify({}), 404)
+    if not s:
+        return jsonify({}), 404
+    d = dict(s)
+    d['teacher_ids'] = [r['teacher_id'] for r in tids]
+    d['offering_section_ids'] = [r['section_id'] for r in sec_ids]
+    return jsonify(d)
+
+
+@app.route('/shs/offerings')
+@login_required
+def shs_offerings():
+    conn = get_db()
+    subjects_list = conn.execute("""
+        SELECT sub.id, sub.subject_code, sub.subject_name, sub.grade_level, sub.strand, sub.semester,
+               COALESCE(NULLIF(sub.shs_type,''), '') AS shs_type,
+               COALESCE((
+                   SELECT GROUP_CONCAT(name, ', ')
+                   FROM (
+                       SELECT sec.section_name AS name
+                       FROM subject_section_offerings sso
+                       JOIN sections sec ON sec.id = sso.section_id
+                       WHERE sso.subject_id = sub.id
+                       ORDER BY sec.grade_level, sec.section_name
+                   )
+               ), '') AS offered_sections
+        FROM subjects sub
+        WHERE sub.grade_level IN ('11','12')
+        ORDER BY sub.grade_level, sub.subject_name
+    """).fetchall()
+    sections_list = conn.execute("""
+        SELECT id, grade_level, section_name
+        FROM sections
+        WHERE grade_level IN ('Grade 11','Grade 12')
+        ORDER BY grade_level, section_name
+    """).fetchall()
+    conn.close()
+    return render_template('shs_offerings.html', subjects=subjects_list, sections=sections_list)
+
+
+@app.route('/shs/offerings/set/<int:sid>', methods=['POST'])
+@login_required
+def shs_set_offering(sid):
+    shs_type = (request.form.get('shs_type') or '').strip()
+    if shs_type not in ('', 'Core', 'Elective', 'Special'):
+        flash('Invalid SHS type.', 'danger')
+        return redirect(url_for('shs_offerings'))
+
+    section_ids = [int(x) for x in request.form.getlist('section_ids') if str(x).isdigit()]
+
+    conn = get_db()
+    conn.execute("UPDATE subjects SET shs_type=? WHERE id=?", (shs_type, sid))
+
+    # Only electives store explicit section offerings; core is automatic, special is handled by scheduling rules.
+    conn.execute("DELETE FROM subject_section_offerings WHERE subject_id=?", (sid,))
+    if shs_type == 'Elective':
+        for sec_id in sorted(set(section_ids)):
+            conn.execute(
+                "INSERT OR IGNORE INTO subject_section_offerings (subject_id, section_id) VALUES (?, ?)",
+                (sid, sec_id)
+            )
+
+    conn.commit(); conn.close()
+    flash('SHS offering updated.', 'success')
+    return redirect(url_for('shs_offerings'))
 
 # ── STRANDS ──
 @app.route('/strands')
@@ -1137,6 +1346,16 @@ def api_subject_teachers(subject_id, section_id):
         WHERE a.subject_id = ? AND a.section_id = ?
         ORDER BY t.last_name, t.first_name
     """, (subject_id, section_id)).fetchall()
+
+    # Fallback: if no section-specific assignment exists, use the subject's eligible teachers (if set)
+    if not rows:
+        rows = conn.execute("""
+            SELECT t.id, t.first_name, t.last_name, t.email
+            FROM teachers t
+            JOIN subject_teachers st ON st.teacher_id = t.id
+            WHERE st.subject_id = ?
+            ORDER BY t.last_name, t.first_name
+        """, (subject_id,)).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -1240,14 +1459,11 @@ MAX_SECTIONS_PER_TEACHER = 8
 def find_conflicts(conn, section_id, teacher_id, day, time_start, time_end,
                    room='', exclude_id=None, subject_id=None, semester=None):
     """
-    Detect scheduling conflicts for a new/edited entry.
-    semester-aware: section, teacher, and room conflicts are only flagged when
-    the existing entry's semester overlaps with the new entry's semester.
-    Overlap rules:
-      - '1st Semester' only overlaps with '1st Semester' and 'Whole Year'
-      - '2nd Semester' only overlaps with '2nd Semester' and 'Whole Year'
-      - 'Whole Year' overlaps with everything
-      - blank/None overlaps with everything (conservative)
+     Detect scheduling conflicts for a new/edited entry.
+    term-scope-aware: section, teacher, and room conflicts are only flagged when
+    the existing entry's term scope overlaps with the new entry's term scope.
+    Overlap rules are derived from SEM_TERMS (supports legacy semester labels).
+    Blank/None scopes are treated conservatively as overlapping everything.
     """
     # Resolve semester of the new entry from subject if not provided directly
     if semester is None and subject_id:
@@ -1255,14 +1471,17 @@ def find_conflicts(conn, section_id, teacher_id, day, time_start, time_end,
         if row:
             semester = row['semester'] or None
 
-    def semesters_overlap(sem_a, sem_b):
-        """True if two semester strings can conflict with each other."""
-        WHOLE = 'Whole Year'
-        if not sem_a or not sem_b:
-            return True   # unknown semester = conservative, treat as overlap
-        if sem_a == WHOLE or sem_b == WHOLE:
-            return True   # whole-year blocks everything
-        return sem_a == sem_b
+    def scopes_overlap(scope_a, scope_b):
+        """True if two scope strings can conflict with each other."""
+        all_terms = globals().get('ALL_TERMS', ['1st Term', '2nd Term', '3rd Term'])
+        scope_map = globals().get('SEM_TERMS', {}) or {}
+
+        def scope_terms(scope):
+            if not scope:
+                return set(all_terms)
+            return set(scope_map.get(scope, all_terms))
+
+        return bool(scope_terms(scope_a) & scope_terms(scope_b))
 
     base_q = """
         SELECT sc.id, sc.section_id, sc.subject_id, sc.teacher_id, sc.time_start, sc.time_end,
@@ -1287,7 +1506,7 @@ def find_conflicts(conn, section_id, teacher_id, day, time_start, time_end,
             continue
 
         existing_sem = r['row_semester'] or r['sub_semester'] or None
-        sem_clash    = semesters_overlap(semester, existing_sem)
+        sem_clash    = scopes_overlap(semester, existing_sem)
 
         # Skip: this is the paired semester entry for the same Whole Year subject
         # (same subject, same section, different semester — not a real conflict)
@@ -1347,32 +1566,55 @@ def find_conflicts(conn, section_id, teacher_id, day, time_start, time_end,
                                    f'from {ts} to {te}.')
                     })
 
-    # Workload check: count distinct sections the teacher handles per semester
-    if semester and semester != 'Whole Year':
-        excl_w = " AND sc.id != ?" if exclude_id else ""
-        args_w = [teacher_id, semester, semester] + ([exclude_id] if exclude_id else [])
-        sec_q  = """
-            SELECT DISTINCT sc.section_id
+    # Workload check: count distinct sections the teacher handles per term.
+    if semester:
+        all_terms = globals().get('ALL_TERMS', ['1st Term', '2nd Term', '3rd Term'])
+        scope_map = globals().get('SEM_TERMS', {}) or {}
+
+        def scope_terms(scope):
+            if not scope:
+                return set(all_terms)
+            return set(scope_map.get(scope, all_terms))
+
+        new_terms = scope_terms(semester)
+
+        args_w = [teacher_id]
+        excl_w = ""
+        if exclude_id:
+            excl_w = " AND sc.id != ?"
+            args_w.append(exclude_id)
+
+        existing_rows = conn.execute("""
+            SELECT DISTINCT sc.section_id,
+                   COALESCE(NULLIF(sc.semester,''), sub.semester) AS scope
             FROM schedules sc
             JOIN subjects sub ON sc.subject_id = sub.id
-            WHERE sc.teacher_id = ? AND (sc.semester = ? OR (sc.semester IS NULL AND sub.semester = ?))
-        """ + excl_w
-        existing_sections = conn.execute(sec_q, args_w).fetchall()
-        existing_sec_ids  = {str(r['section_id']) for r in existing_sections}
+            WHERE sc.teacher_id = ?
+        """ + excl_w, args_w).fetchall()
 
-        if str(section_id) not in existing_sec_ids and                 len(existing_sec_ids) >= MAX_SECTIONS_PER_TEACHER:
-            teacher_row = conn.execute(
-                "SELECT first_name || ' ' || last_name AS name FROM teachers WHERE id=?",
-                (teacher_id,)
-            ).fetchone()
-            teacher_name = teacher_row['name'] if teacher_row else 'This teacher'
-            conflicts.append({
-                'type':   'workload',
-                'label':  'Workload Limit Reached',
-                'detail': (f'{teacher_name} already covers '
-                           f'{len(existing_sec_ids)} section(s) in {semester} — '
-                           f'the maximum is {MAX_SECTIONS_PER_TEACHER} per semester.')
-            })
+        per_term_sections = {t: set() for t in all_terms}
+        for r in existing_rows:
+            scope = (r['scope'] or '').strip()
+            for t in scope_terms(scope):
+                if t in per_term_sections:
+                    per_term_sections[t].add(str(r['section_id']))
+
+        new_sec = str(section_id)
+        for t in sorted(new_terms):
+            if new_sec not in per_term_sections.get(t, set()) and len(per_term_sections.get(t, set())) >= MAX_SECTIONS_PER_TEACHER:
+                teacher_row = conn.execute(
+                    "SELECT first_name || ' ' || last_name AS name FROM teachers WHERE id=?",
+                    (teacher_id,)
+                ).fetchone()
+                teacher_name = teacher_row['name'] if teacher_row else 'This teacher'
+                conflicts.append({
+                    'type':   'workload',
+                    'label':  'Workload Limit Reached',
+                    'detail': (f'{teacher_name} already covers '
+                               f'{len(per_term_sections.get(t, set()))} section(s) in {t} — '
+                               f'the maximum is {MAX_SECTIONS_PER_TEACHER} per term.')
+                })
+                break
 
     seen, unique = set(), []
     for c in conflicts:
@@ -1398,65 +1640,71 @@ def api_check_conflict():
     semester_override = d.get('semester_override', '').strip()
 
     def get_workload(conn, tid, sid, sec_id, resolved_sem=None):
-        # Use resolved semester if provided (e.g. WY subject with semester_override)
-        # otherwise derive from subject
+        # Use resolved term scope if provided; otherwise derive from subject.
         if resolved_sem:
-            semester = resolved_sem
+            scope = resolved_sem
         elif sid:
             row = conn.execute("SELECT semester FROM subjects WHERE id=?", (sid,)).fetchone()
-            semester = (row['semester'] or None) if row else None
+            scope = (row['semester'] or None) if row else None
         else:
-            semester = None
+            scope = None
 
-        # For WY subjects with no override, show workload per-sem breakdown
-        if semester and semester != 'Whole Year':
-            cnt = conn.execute("""
-                SELECT COUNT(DISTINCT sc.section_id)
-                FROM schedules sc
-                WHERE sc.teacher_id = ? AND (
-                    sc.semester = ?
-                    OR (sc.semester IS NULL AND EXISTS (
-                        SELECT 1 FROM subjects sub WHERE sub.id = sc.subject_id AND sub.semester = ?
-                    ))
-                )
-            """, (tid, semester, semester)).fetchone()[0]
+        all_terms = globals().get('ALL_TERMS', ['1st Term', '2nd Term', '3rd Term'])
+        scope_map = globals().get('SEM_TERMS', {}) or {}
 
-            is_new = conn.execute("""
-                SELECT COUNT(*) FROM schedules sc
-                WHERE sc.teacher_id = ? AND sc.section_id = ? AND (
-                    sc.semester = ?
-                    OR (sc.semester IS NULL AND EXISTS (
-                        SELECT 1 FROM subjects sub WHERE sub.id = sc.subject_id AND sub.semester = ?
-                    ))
-                )
-            """, (tid, sec_id, semester, semester)).fetchone()[0] == 0
+        def scope_terms(s):
+            if not s:
+                return set(all_terms)
+            return set(scope_map.get(s, all_terms))
 
-            projected = cnt + 1 if is_new else cnt
-            return {
-                'current':   cnt,
-                'projected': projected,
-                'max':       MAX_SECTIONS_PER_TEACHER,
-                'semester':  semester,
-            }
-        else:
-            rows = conn.execute("""
-                SELECT COALESCE(sc.semester, sub.semester) AS sem,
-                       COUNT(DISTINCT sc.section_id) AS cnt
-                FROM schedules sc
-                JOIN subjects sub ON sc.subject_id = sub.id
-                WHERE sc.teacher_id = ?
-                GROUP BY COALESCE(sc.semester, sub.semester)
-            """, (tid,)).fetchall()
-            per_sem = {r['sem']: r['cnt'] for r in rows if r['sem']}
-            busiest_sem = max(per_sem, key=per_sem.get) if per_sem else None
-            busiest_cnt = per_sem[busiest_sem] if busiest_sem else 0
+        # Build per-term distinct-section counts for this teacher.
+        rows = conn.execute("""
+            SELECT DISTINCT sc.section_id,
+                   COALESCE(NULLIF(sc.semester,''), sub.semester) AS scope
+            FROM schedules sc
+            JOIN subjects sub ON sc.subject_id = sub.id
+            WHERE sc.teacher_id = ?
+        """, (tid,)).fetchall()
+
+        per_term_sections = {t: set() for t in all_terms}
+        for r in rows:
+            rscope = (r['scope'] or '').strip()
+            for t in scope_terms(rscope):
+                if t in per_term_sections:
+                    per_term_sections[t].add(str(r['section_id']))
+
+        per_term = {t: len(sids) for t, sids in per_term_sections.items()}
+
+        if not scope:
+            busiest_term = max(per_term, key=per_term.get) if per_term else None
+            busiest_cnt = per_term.get(busiest_term, 0) if busiest_term else 0
             return {
                 'current':   busiest_cnt,
                 'projected': busiest_cnt,
                 'max':       MAX_SECTIONS_PER_TEACHER,
-                'semester':  busiest_sem,
-                'per_sem':   per_sem,
+                'semester':  busiest_term,
+                'per_sem':   per_term,
             }
+
+        terms = sorted(scope_terms(scope))
+        # Pick the term in this scope with the highest current load for display.
+        busiest_term = max(terms, key=lambda t: per_term.get(t, 0)) if terms else None
+        current = per_term.get(busiest_term, 0) if busiest_term else 0
+
+        # Projected assumes adding a section impacts each term in the scope (if new to that term).
+        projected_per_term = per_term.copy()
+        new_sec = str(sec_id)
+        for t in terms:
+            if new_sec not in per_term_sections.get(t, set()):
+                projected_per_term[t] = projected_per_term.get(t, 0) + 1
+        projected = projected_per_term.get(busiest_term, current) if busiest_term else current
+
+        return {
+            'current':   current,
+            'projected': projected,
+            'max':       MAX_SECTIONS_PER_TEACHER,
+            'semester':  busiest_term,
+        }
 
     if not all([section_id, teacher_id, day, time_start, time_end]):
         workload = None
@@ -1483,7 +1731,7 @@ def api_check_conflict():
     sub_sem_row = conn.execute("SELECT semester FROM subjects WHERE id=?", (subject_id,)).fetchone() if subject_id else None
     raw_sem     = (sub_sem_row['semester'] or '') if sub_sem_row else ''
     if raw_sem == 'Whole Year':
-        if semester_override in ('1st Semester', '2nd Semester', 'Whole Year'):
+        if semester_override in ('1st Term', '2nd Term', '3rd Term', 'Whole Year', '1st Semester', '2nd Semester'):
             check_sem = semester_override
         else:
             check_sem = raw_sem
@@ -1536,18 +1784,15 @@ def schedule(sec_id):
             ELSE 7 END, sc.time_start
     """, (sec_id,)).fetchall()
 
-    # Build semester tabs — use sc.semester (stored), fall back to sub.semester for legacy NULL rows
-    # Whole Year entries expand to show in both tabs
+    # Build term tabs — use sc.semester (stored), fall back to sub.semester for legacy NULL rows
+    # Scopes expand to the term(s) they cover (Whole Year shows in all terms).
     raw_sems = set()
     for s in schedules_list:
         sem = s['semester'] or s['subject_semester'] or None
         if not sem:
             continue
-        if sem == 'Whole Year':
-            raw_sems.add('1st Semester')
-            raw_sems.add('2nd Semester')
-        else:
-            raw_sems.add(sem)
+        for t in SEM_TERMS.get(sem, []):
+            raw_sems.add(t)
     semesters_present = sorted(raw_sems)
     strands_list  = conn.execute("SELECT * FROM strands ORDER BY strand_code").fetchall()
     teachers_list = conn.execute("SELECT id,first_name,last_name FROM teachers ORDER BY last_name").fetchall()
@@ -1573,9 +1818,16 @@ def schedule(sec_id):
             # Section has a strand - show only subjects for that strand
             rows = conn.execute("""
                 SELECT sub.id AS subject_id, sub.subject_name, sub.subject_code,
-                       COALESCE(a.teacher_id, COALESCE(sch.teacher_id, '')) AS teacher_id,
-                       COALESCE(t.first_name, t2.first_name) AS teacher_first,
-                       COALESCE(t.last_name, t2.last_name) AS teacher_last,
+                       a.teacher_id AS assigned_teacher_id,
+                       COALESCE(
+                           a.teacher_id,
+                           sch.teacher_id,
+                           (SELECT CASE WHEN COUNT(*)=1 THEN MAX(teacher_id) ELSE NULL END
+                            FROM subject_teachers st WHERE st.subject_id = sub.id),
+                           ''
+                       ) AS teacher_id,
+                       COALESCE(t.first_name, t2.first_name, td.first_name) AS teacher_first,
+                       COALESCE(t.last_name, t2.last_name, td.last_name) AS teacher_last,
                        COALESCE(sch.day, '') AS scheduled_day,
                        COALESCE(sch.time_start, '') AS scheduled_time_start,
                        COALESCE(sch.id, '') AS schedule_id
@@ -1585,6 +1837,10 @@ def schedule(sec_id):
                 LEFT JOIN teachers t ON t.id = a.teacher_id
                 LEFT JOIN schedules sch ON sch.subject_id = sub.id AND sch.section_id = ?
                 LEFT JOIN teachers t2 ON t2.id = sch.teacher_id
+                LEFT JOIN teachers td ON td.id = (
+                    SELECT CASE WHEN COUNT(*)=1 THEN MAX(teacher_id) ELSE NULL END
+                    FROM subject_teachers st WHERE st.subject_id = sub.id
+                )
                 WHERE ss.strand_id = ? AND sub.grade_level IN ('7','8','9','10')
                 ORDER BY sub.subject_name
             """, (sec_id, sec_id, section['strand_id'])).fetchall()
@@ -1592,9 +1848,16 @@ def schedule(sec_id):
             # Section has no strand - show all JHS subjects
             rows = conn.execute("""
                 SELECT sub.id AS subject_id, sub.subject_name, sub.subject_code,
-                       COALESCE(a.teacher_id, COALESCE(sch.teacher_id, '')) AS teacher_id,
-                       COALESCE(t.first_name, t2.first_name) AS teacher_first,
-                       COALESCE(t.last_name, t2.last_name) AS teacher_last,
+                       a.teacher_id AS assigned_teacher_id,
+                       COALESCE(
+                           a.teacher_id,
+                           sch.teacher_id,
+                           (SELECT CASE WHEN COUNT(*)=1 THEN MAX(teacher_id) ELSE NULL END
+                            FROM subject_teachers st WHERE st.subject_id = sub.id),
+                           ''
+                       ) AS teacher_id,
+                       COALESCE(t.first_name, t2.first_name, td.first_name) AS teacher_first,
+                       COALESCE(t.last_name, t2.last_name, td.last_name) AS teacher_last,
                        COALESCE(sch.day, '') AS scheduled_day,
                        COALESCE(sch.time_start, '') AS scheduled_time_start,
                        COALESCE(sch.id, '') AS schedule_id
@@ -1603,6 +1866,10 @@ def schedule(sec_id):
                 LEFT JOIN teachers t ON t.id = a.teacher_id
                 LEFT JOIN schedules sch ON sch.subject_id = sub.id AND sch.section_id = ?
                 LEFT JOIN teachers t2 ON t2.id = sch.teacher_id
+                LEFT JOIN teachers td ON td.id = (
+                    SELECT CASE WHEN COUNT(*)=1 THEN MAX(teacher_id) ELSE NULL END
+                    FROM subject_teachers st WHERE st.subject_id = sub.id
+                )
                 WHERE sub.grade_level IN ('7','8','9','10')
                 ORDER BY sub.subject_name
             """, (sec_id, sec_id)).fetchall()
@@ -1712,7 +1979,7 @@ def auto_create_schedule(sec_id):
         parsed.append({
             'subject_id': subject_id,
             'teacher_id': teacher_id,
-            'is_homeroom': str(is_homeroom) == '1' if is_homeroom else False
+            'is_homeroom': str(is_homeroom).lower() in ('1', 'true')
         })
     
     # Validate teacher workload - ensure no teacher teaches more than MAX_SECTIONS_PER_TEACHER sections
@@ -2080,12 +2347,12 @@ def add_schedule(sec_id):
         # JHS Whole Year: Force Whole Year silently regardless of what was posted
         semesters_to_save = ['Whole Year']
     elif raw_sem == 'Whole Year':
-        # Non-JHS Whole Year: User must select a semester
-        if semester_override in ('1st Semester', '2nd Semester'):
+        # Non-JHS Whole Year: User must select a term scope
+        if semester_override in ('1st Term', '2nd Term', '3rd Term', 'Whole Year', '1st Semester', '2nd Semester'):
             semesters_to_save = [semester_override]
         else:
             conn.close()
-            flash('Please select a semester (1st or 2nd) for this Whole Year subject.', 'danger')
+            flash('Please select a term (1st/2nd/3rd) for this Whole Year subject.', 'danger')
             return redirect(url_for('schedule', sec_id=sec_id))
     elif raw_sem:
         semesters_to_save = [raw_sem]
@@ -2187,15 +2454,15 @@ def edit_schedule(sch_id, sec_id):
     sync_pair      = d.get('sync_pair') == '1'
     paired_updated = False
 
-    if sync_pair and stored_sem in ('1st Semester', '2nd Semester'):
-        # Find sibling: same subject/section/day, different semester
-        pair = conn.execute("""
+    if sync_pair and stored_sem:
+        # Sync all siblings: same subject/section/day, different scope (for Whole Year subjects)
+        pairs = conn.execute("""
             SELECT id FROM schedules
             WHERE subject_id=? AND section_id=? AND day=?
               AND id != ?
               AND (semester IS NULL OR semester != ?)
-        """, (subject_id, sec_id, day, sch_id, stored_sem or '')).fetchone()
-        if pair:
+        """, (subject_id, sec_id, day, sch_id, stored_sem or '')).fetchall()
+        for pair in pairs:
             conn.execute(
                 "UPDATE schedules SET teacher_id=?, strand_id=?, time_start=?, time_end=?, room=? WHERE id=?",
                 (teacher_id, strand_id, time_start, time_end, room, pair['id'])
@@ -2267,7 +2534,7 @@ def bulk_flush_schedules():
     else:
         flash(f'Cleared {total_deleted} schedule entr{"ies" if total_deleted != 1 else "y"} across {len(section_names)} section(s).', 'success')
 
-    return redirect(url_for('schedules'))
+    return redirect(url_for('sections'))
 
 # ── STUDENTS ──────────────────────────────────────────────────
 
@@ -2975,9 +3242,9 @@ def open_next_period():
     conn = get_db()
     settings = get_period_settings(conn)
 
-    sem = request.form.get('semester', '1st Semester')
-    if sem not in SEM_TERMS and sem != 'Whole Year':
-        flash('Invalid semester.', 'danger')
+    sem = request.form.get('semester', '1st Term')
+    if sem not in SEM_TERMS:
+        flash('Invalid term scope.', 'danger')
         return redirect(url_for('grades_home'))
 
     # Enforce sequential unlock within this semester
@@ -3046,12 +3313,32 @@ def grades_home():
 ALL_TERMS    = ['1st Term', '2nd Term', '3rd Term']
 TERM_ORDER   = {t: i for i, t in enumerate(ALL_TERMS)}
 
-# Semesters only apply to SHS (grades 11-12)
-# JHS (grades 7-10) uses only Terms, no semesters
+# Term scopes used across the system.
+# NOTE: DB columns are still named `semester` for backward compatibility, but values
+# now represent term scopes (plus "Whole Year").
+#
+# Backward-compatibility:
+# - legacy '1st Semester' behaves like ['1st Term','2nd Term']
+# - legacy '2nd Semester' behaves like ['3rd Term']
 SEM_TERMS = {
+    '1st Term':   ['1st Term'],
+    '2nd Term':   ['2nd Term'],
+    '3rd Term':   ['3rd Term'],
+    'Whole Year': ['1st Term', '2nd Term', '3rd Term'],
+    # legacy
     '1st Semester': ['1st Term', '2nd Term'],
     '2nd Semester': ['3rd Term'],
 }
+
+def normalize_term_scope(scope):
+    """Map legacy semester labels to the closest term scope."""
+    if not scope:
+        return scope
+    if scope == '1st Semester':
+        return '1st Term'
+    if scope == '2nd Semester':
+        return '3rd Term'
+    return scope
 
 def get_open_periods(conn):
     """Return list of periods currently open school-wide."""
@@ -3062,13 +3349,12 @@ def get_open_periods(conn):
     return [p for p in ALL_TERMS if p in open_set]
 
 def get_open_periods_for_subject(conn, subject_semester, active_sem=None):
-    """Return open periods for a subject based on its semester.
-    Each semester has independent term controls.
-    Whole Year subjects follow whichever semester tab is active.
+    """Return open periods for a subject based on its term scope.
+    Each term scope has independent controls.
+    For blank/unset scopes, fall back to the active scope.
     """
     if not subject_semester or subject_semester not in SEM_TERMS:
-        # Whole Year or unset: use active semester's controls, default to 1st
-        lookup_sem = active_sem or '1st Semester'
+        lookup_sem = active_sem or '1st Term'
     else:
         lookup_sem = subject_semester
     rows = conn.execute(
@@ -3088,9 +3374,20 @@ def get_period_settings(conn):
     return result
 
 def subjects_for_sem_tab(subjects_all, active_sem):
-    """Subjects for a semester tab: that semester's subjects + Whole Year."""
-    return [s for s in subjects_all
-            if (s['semester'] or '') in (active_sem, 'Whole Year', '')]
+    """Subjects for a term tab: subjects whose scope covers that term + Whole Year/blank."""
+    if not active_sem:
+        return list(subjects_all)
+    active_terms = set(SEM_TERMS.get(active_sem, ALL_TERMS))
+    out = []
+    for s in subjects_all:
+        scope = (s.get('semester') or '').strip()
+        if not scope or scope == 'Whole Year':
+            out.append(s)
+            continue
+        scope_terms = set(SEM_TERMS.get(scope, ALL_TERMS))
+        if active_terms & scope_terms:
+            out.append(s)
+    return out
 
 @app.route('/grades/section/<int:sec_id>')
 @login_required
@@ -3111,9 +3408,9 @@ def grade_sheet(sec_id):
     if is_jhs:
         active_sem = 'Whole Year'
     else:
-        active_sem = request.args.get('sem', '1st Semester')
-        if active_sem not in ('1st Semester', '2nd Semester', 'Whole Year'):
-            active_sem = '1st Semester'
+        active_sem = request.args.get('sem', '1st Term')
+        if active_sem not in SEM_TERMS:
+            active_sem = '1st Term'
     subjects_all = get_section_subjects(conn, sec_id, active_sem)
     subjects = subjects_for_sem_tab(subjects_all, active_sem)
 
@@ -3124,7 +3421,8 @@ def grade_sheet(sec_id):
 
     # Determine which quarters apply to the selected subject in this semester
     if sel_subject:
-        sub_sem = sel_subject['semester'] if sel_subject['semester'] in ('1st Semester','2nd Semester') else active_sem
+        sub_scope = (sel_subject['semester'] or '').strip()
+        sub_sem = sub_scope if (sub_scope and sub_scope in SEM_TERMS) else active_sem
         sem_q_rows = conn.execute(
             "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id",
             (sub_sem,)
@@ -3135,8 +3433,8 @@ def grade_sheet(sec_id):
     grades_raw = conn.execute(
         "SELECT g.student_id, g.quarter, g.written_works, g.performance_tasks, g.quarterly_assessment FROM grades g WHERE g.section_id=? AND g.subject_id=? AND g.semester=?",
         (sec_id, sel_sub_id or 0,
-         active_sem if (not sel_subject or sel_subject['semester'] in ('', 'Whole Year'))
-         else sel_subject['semester'])
+         ('Whole Year' if (sel_subject and (sel_subject['semester'] or '').strip() == 'Whole Year')
+          else (sel_subject['semester'] if (sel_subject and (sel_subject['semester'] or '').strip()) else active_sem)))
     ).fetchall() if sel_sub_id else []
 
     grade_map = {}
@@ -3225,9 +3523,13 @@ def grade_summary(sec_id):
         conn.close()
         return redirect(url_for('grades_home'))
 
-    active_sem = request.args.get('sem', '1st Semester')
-    if active_sem not in ('1st Semester', '2nd Semester'):
-        active_sem = '1st Semester'
+    is_jhs = section['grade_level'] in ('7', '8', '9', '10')
+    if is_jhs:
+        active_sem = 'Whole Year'
+    else:
+        active_sem = request.args.get('sem', '1st Term')
+        if active_sem not in SEM_TERMS:
+            active_sem = '1st Term'
 
     subjects = get_section_subjects(conn, sec_id, active_sem)
     subjects  = subjects_for_sem_tab(subjects, active_sem)
@@ -3270,13 +3572,15 @@ def grade_summary(sec_id):
         sub_grades = {}
         gen_vals   = []
         for sub in subjects:
-            # Determine effective semester for this subject's grades
-            if sub['semester'] in ('1st Semester', '2nd Semester'):
-                eff_sem     = sub['semester']
-                relevant_qs = sem_quarters_map.get(eff_sem, ALL_TERMS)
+            # Determine effective scope for this subject's grades
+            sub_scope = (sub.get('semester') or '').strip()
+            if sub_scope == 'Whole Year':
+                eff_sem = 'Whole Year'
+            elif sub_scope:
+                eff_sem = sub_scope
             else:
-                eff_sem     = active_sem
-                relevant_qs = sem_quarters_map.get(active_sem, ALL_TERMS)
+                eff_sem = active_sem
+            relevant_qs = sem_quarters_map.get(eff_sem, ALL_TERMS)
             grade_key = (sub['id'], eff_sem)
             q_vals = [
                 grade_map.get(st['id'], {}).get(grade_key, {}).get(q)
@@ -3416,7 +3720,7 @@ def save_grade_cell():
     if 'teacher_id' in session and 'admin_id' not in session:
         period_row = conn.execute(
             "SELECT is_open FROM grading_period_settings WHERE period=? AND semester=?",
-            (quarter, semester or '1st Semester')
+            (quarter, semester or '1st Term')
         ).fetchone()
         if not period_row or not period_row['is_open']:
             conn.close()
@@ -3513,14 +3817,18 @@ def student_profile(student_id):
 
     QUARTERS = ['1st Term', '2nd Term', '3rd Term']
     subject_rows = []
-    sem1_avgs = []
-    sem2_avgs = []
     all_sub_avgs = []
 
     for sub in subjects:
         qgrades = {}
         has_any_grade = False
-        sub_eff_sem = sub['semester'] if sub['semester'] in ('1st Semester','2nd Semester') else '1st Semester'
+        sub_scope = (sub.get('semester') or '').strip()
+        if sub_scope == 'Whole Year':
+            sub_eff_sem = 'Whole Year'
+        elif sub_scope:
+            sub_eff_sem = sub_scope
+        else:
+            sub_eff_sem = 'Whole Year'
         for q in QUARTERS:
             row    = grade_map.get(sub['id'], {}).get(sub_eff_sem, {}).get(q)
             status = sub_statuses.get((sub['id'], sub_eff_sem, q), 'Draft')
@@ -3536,14 +3844,8 @@ def student_profile(student_id):
         visible_grades = [qgrades[q]['grade'] for q in QUARTERS if qgrades[q]['grade'] is not None]
         sub_avg = round(sum(visible_grades)/len(visible_grades), 2) if visible_grades else None
 
-        sub_sem = sub['semester'] or ''
         if sub_avg is not None:
             all_sub_avgs.append(sub_avg)
-            if sub_sem == '1st Semester':   sem1_avgs.append(sub_avg)
-            elif sub_sem == '2nd Semester': sem2_avgs.append(sub_avg)
-            elif sub_sem in ('Whole Year', ''):
-                sem1_avgs.append(sub_avg)
-                sem2_avgs.append(sub_avg)
 
         subject_rows.append({
             'subject': sub, 'quarters': qgrades,
@@ -3552,8 +3854,6 @@ def student_profile(student_id):
         })
 
     general_avg = round(sum(all_sub_avgs)/len(all_sub_avgs), 2) if all_sub_avgs else None
-    sem1_avg    = round(sum(sem1_avgs)/len(sem1_avgs), 2) if sem1_avgs else None
-    sem2_avg    = round(sum(sem2_avgs)/len(sem2_avgs), 2) if sem2_avgs else None
     honor       = honor_classification(general_avg)
     conn.close()
     return render_template('student_profile.html', student=student, subject_rows=subject_rows,
@@ -3590,13 +3890,14 @@ def teacher_profile(teacher_id):
     sections_count = len({s['section_name'] for s in schedules})
     subjects_count = len({s['subject_code'] for s in schedules})
 
-    # Workload per semester
-    workload = {}
+    # Workload per term (scope-aware)
+    workload = {t: set() for t in ALL_TERMS}
     for s in schedules:
-        sem = s['row_semester'] or s['sub_semester'] or 'Other'
-        if sem not in ('1st Semester','2nd Semester'): continue
-        workload.setdefault(sem, set()).add(s['section_name'])
-    workload_counts = {k: len(v) for k,v in workload.items()}
+        scope = (s['row_semester'] or s['sub_semester'] or '').strip()
+        for t in SEM_TERMS.get(scope, ALL_TERMS):
+            if t in workload:
+                workload[t].add(s['section_name'])
+    workload_counts = {k: len(v) for k, v in workload.items() if v}
 
     # Grade encoding progress for this teacher
     assigned_subjects = conn.execute("""
@@ -3647,15 +3948,7 @@ def report_card(student_id):
     sec_id   = student['section_id']
     QUARTERS = ALL_TERMS
 
-    # Get terms per semester from settings
-    sem_q_map = {}
-    for sem in ('1st Semester', '2nd Semester'):
-        rows = conn.execute(
-            "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id", (sem,)
-        ).fetchall()
-        sem_q_map[sem] = [r['period'] for r in rows] if rows else QUARTERS
-
-    # Submission statuses: (subject_id, semester, quarter) -> status
+    # Submission statuses: (subject_id, scope, quarter) -> status
     sub_statuses = {}
     if sec_id:
         rows = conn.execute(
@@ -3677,12 +3970,19 @@ def report_card(student_id):
     for g in grades_raw:
         grade_map.setdefault(g['subject_id'], {}).setdefault(g['semester'] or '', {})[g['quarter']] = g
 
-    def build_sem_rows(subjects, active_sem):
+    def build_term_rows(subjects, term):
         rows_out = []
         sub_avgs = []
         for sub in subjects:
-            eff_sem = active_sem if sub['semester'] in ('', 'Whole Year') else sub['semester']
-            quarters = sem_q_map.get(eff_sem, QUARTERS)
+            sub_scope = (sub.get('semester') or '').strip()
+            if sub_scope == 'Whole Year':
+                eff_sem = 'Whole Year'
+            elif sub_scope:
+                eff_sem = sub_scope
+            else:
+                eff_sem = term
+
+            quarters = [term]
             qgrades  = {}
             for q in quarters:
                 row    = grade_map.get(sub['id'], {}).get(eff_sem, {}).get(q)
@@ -3709,16 +4009,16 @@ def report_card(student_id):
         sem_avg = round(sum(sub_avgs) / len(sub_avgs), 2) if sub_avgs else None
         return rows_out, sem_avg
 
-    # Build per-semester subject rows
+    # Build per-term subject rows
     sem_data = {}
-    for sem in ('1st Semester', '2nd Semester'):
-        subs = get_section_subjects(conn, sec_id, sem) if sec_id else []
-        subs = subjects_for_sem_tab(subs, sem)
-        rows_out, sem_avg = build_sem_rows(subs, sem)
-        sem_data[sem] = {'rows': rows_out, 'avg': sem_avg}
+    for term in ALL_TERMS:
+        subs = get_section_subjects(conn, sec_id, term) if sec_id else []
+        subs = subjects_for_sem_tab(subs, term)
+        rows_out, term_avg = build_term_rows(subs, term)
+        sem_data[term] = {'rows': rows_out, 'avg': term_avg}
 
-    # General average across both semesters
-    all_avgs = [v for sem in sem_data.values() for v in [sem['avg']] if v is not None]
+    # General average across all terms
+    all_avgs = [v for term in sem_data.values() for v in [term['avg']] if v is not None]
     general_avg = round(sum(all_avgs) / len(all_avgs), 2) if all_avgs else None
     honor = honor_classification(general_avg)
 
@@ -3734,9 +4034,9 @@ def report_card(student_id):
 def honor_roll():
     conn = get_db()
     sec_id     = request.args.get('section_id', type=int)
-    active_sem = request.args.get('sem', '1st Semester')
-    if active_sem not in ('1st Semester', '2nd Semester'):
-        active_sem = '1st Semester'
+    active_sem = request.args.get('sem', '1st Term')
+    if active_sem not in ALL_TERMS:
+        active_sem = '1st Term'
 
     sections_list = conn.execute("""
         SELECT s.id, s.section_name, s.grade_level, st.strand_code
@@ -3744,12 +4044,12 @@ def honor_roll():
         ORDER BY s.grade_level, s.section_name
     """).fetchall()
 
-    # Get quarters that belong to this semester
+    # Get quarters that belong to this term scope
     sem_q_rows = conn.execute(
         "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id",
         (active_sem,)
     ).fetchall()
-    sem_quarters = [r['period'] for r in sem_q_rows] if sem_q_rows else ALL_TERMS
+    sem_quarters = [r['period'] for r in sem_q_rows] if sem_q_rows else [active_sem]
 
     honorees = []
     if sec_id:
@@ -3758,31 +4058,20 @@ def honor_roll():
             FROM students WHERE section_id=? ORDER BY last_name, first_name
         """, (sec_id,)).fetchall()
 
-        # Get subjects for this semester — strictly scoped
-        # For honor roll: N/A subjects treated as 1st Semester only
+        # Get subjects that cover this term.
         subjects_all_hr = get_section_subjects(conn, sec_id, active_sem)
-        subjects = [s for s in subjects_all_hr
-                    if s['semester'] == active_sem
-                    or s['semester'] == 'Whole Year'
-                    or (s['semester'] in ('', None) and active_sem == '1st Semester')]
+        subjects = subjects_for_sem_tab(subjects_all_hr, active_sem)
         sub_ids  = [s['id'] for s in subjects]
 
         if sub_ids:
             # Only use Approved/Locked grades for honor roll — scoped to active semester
             sub_statuses_hr = {}
             qs_rows = conn.execute(
-                "SELECT subject_id, quarter, status FROM grade_submissions WHERE section_id=? AND semester=?",
-                (sec_id, active_sem)
-            ).fetchall()
-            for r in qs_rows:
-                sub_statuses_hr.setdefault(r['subject_id'], {})[r['quarter']] = r['status']
-            # Also include legacy empty-semester rows
-            qs_rows2 = conn.execute(
-                "SELECT subject_id, quarter, status FROM grade_submissions WHERE section_id=? AND semester=''",
+                "SELECT subject_id, semester, quarter, status FROM grade_submissions WHERE section_id=?",
                 (sec_id,)
             ).fetchall()
-            for r in qs_rows2:
-                sub_statuses_hr.setdefault(r['subject_id'], {}).setdefault(r['quarter'], r['status'])
+            for r in qs_rows:
+                sub_statuses_hr[(r['subject_id'], r['semester'] or '', r['quarter'])] = r['status']
 
             for st in students:
                 sub_avgs = []
@@ -3801,7 +4090,7 @@ def honor_roll():
                     # Only count grades from Approved or Locked quarters
                     qvals = []
                     for g in grades_raw:
-                        status = sub_statuses_hr.get(sub['id'], {}).get(g['quarter'], 'Draft')
+                        status = sub_statuses_hr.get((sub['id'], eff_sem, g['quarter']), 'Draft')
                         if status not in ('Approved', 'Locked'):
                             continue
                         qg = compute_quarterly_grade(g['written_works'], g['performance_tasks'], g['quarterly_assessment'])
@@ -4024,7 +4313,7 @@ def teacher_dashboard():
     assigned = conn.execute("""
         SELECT DISTINCT sc.subject_id, sub.subject_name, sub.subject_code,
                sc.section_id, sec.section_name, sec.grade_level,
-               COALESCE(sc.semester, sub.semester) AS sem
+               COALESCE(NULLIF(sc.semester,''), sub.semester) AS sem
         FROM schedules sc
         JOIN subjects sub ON sc.subject_id=sub.id
         JOIN sections sec ON sc.section_id=sec.id
@@ -4036,9 +4325,7 @@ def teacher_dashboard():
     QUARTERS = ['1st Term','2nd Term','3rd Term']
     status_map = {}
     for row in assigned:
-        sub_sem = (row['sem'] or '').strip()
-        if sub_sem not in ('1st Semester', '2nd Semester'):
-            sub_sem = get_effective_semester(conn, row['subject_id'], row['section_id'])
+        sub_sem = get_effective_semester(conn, row['subject_id'], row['section_id'])
         rows = conn.execute(
             "SELECT quarter, status FROM grade_submissions WHERE subject_id=? AND section_id=? AND semester=?",
             (row['subject_id'], row['section_id'], sub_sem)
@@ -4094,26 +4381,27 @@ def teacher_grade_sheet(sec_id, sub_id):
     _tgs_sub_sem_raw = conn.execute("SELECT semester FROM subjects WHERE id=?", (sub_id,)).fetchone()
     _tgs_sub_sem = (_tgs_sub_sem_raw['semester'] or '') if _tgs_sub_sem_raw else ''
 
-    sub_semester = subject['semester'] if subject else ''
-    # For WY subjects — allow teacher to switch semester via ?sem= param
-    # Also check sc.semester on their schedule entry
+    sub_semester = (subject['semester'] or '').strip() if subject else ''
+
+    # Active term tab (used for N/A subjects). For scoped subjects, eff_sem is derived from subject.
     req_sem = request.args.get('sem', '').strip()
-    sched_sem_row = conn.execute(
+    active_sem = req_sem if req_sem in ALL_TERMS else '1st Term'
+
+    # Prefer schedule scope (if present) as a sensible default for N/A subjects.
+    sched_scope_row = conn.execute(
         "SELECT sc.semester FROM schedules sc "
         "WHERE sc.teacher_id=? AND sc.section_id=? AND sc.subject_id=? "
-        "AND sc.semester IN ('1st Semester','2nd Semester') LIMIT 1",
+        "AND sc.semester IS NOT NULL AND sc.semester != '' LIMIT 1",
         (tid, sec_id, sub_id)
     ).fetchone()
-    if req_sem in ('1st Semester', '2nd Semester'):
-        active_sem = req_sem
-    elif sched_sem_row:
-        active_sem = sched_sem_row['semester']
-    elif sub_semester in ('1st Semester', '2nd Semester'):
-        active_sem = sub_semester
-    else:
-        active_sem = '1st Semester'
-    # Effective semester for grade storage
-    eff_sem = active_sem if sub_semester in ('', 'Whole Year') else sub_semester
+    if (not req_sem) and sched_scope_row:
+        sched_scope = (sched_scope_row['semester'] or '').strip()
+        terms = SEM_TERMS.get(sched_scope, [])
+        if terms:
+            active_sem = sorted(terms)[0]
+
+    # Effective scope for grade storage
+    eff_sem = get_effective_semester(conn, sub_id, sec_id, active_sem)
 
     # Load submission statuses scoped to this semester
     sub_rows = conn.execute(
@@ -4195,7 +4483,7 @@ def teacher_export_grades(sec_id, sub_id):
     if not PERIODS:
         PERIODS = ALL_TERMS
 
-    fallback_exp = request.args.get('semester') or '1st Semester'
+    fallback_exp = request.args.get('semester') or '1st Term'
     eff_sem_exp  = get_effective_semester(conn, sub_id, sec_id, fallback_exp)
     grades_raw = conn.execute(
         "SELECT student_id, quarter, written_works, performance_tasks, quarterly_assessment "
@@ -4256,7 +4544,7 @@ def admin_export_grades(sec_id):
     if not PERIODS:
         PERIODS = ALL_TERMS
 
-    fallback_exp = request.args.get('semester') or '1st Semester'
+    fallback_exp = request.args.get('semester') or '1st Term'
     grades_raw = conn.execute(
         "SELECT student_id, quarter, written_works, performance_tasks, quarterly_assessment "
         "FROM grades WHERE subject_id=? AND section_id=? AND semester=?",
@@ -4290,20 +4578,251 @@ def admin_export_grades(sec_id):
     resp.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
     return resp
 
+
+# ── Export all grades for a teacher+section (single CSV; subjects distinguished by subject_id) ──
+@app.route('/teacher/grade_sheet/<int:sec_id>/export_all_csv')
+@teacher_required
+def teacher_export_grades_all_csv(sec_id):
+    conn = get_db()
+    tid = session['teacher_id']
+
+    assigned_rows = conn.execute(
+        "SELECT DISTINCT subject_id FROM schedules WHERE teacher_id=? AND section_id=?",
+        (tid, sec_id)
+    ).fetchall()
+    sub_ids = [r['subject_id'] for r in assigned_rows]
+    if not sub_ids:
+        conn.close()
+        flash('No assigned subjects found for this section.', 'warning')
+        return redirect(url_for('teacher_dashboard'))
+
+    section = conn.execute(
+        "SELECT section_name, grade_level FROM sections WHERE id=?",
+        (sec_id,)
+    ).fetchone()
+    if not section:
+        conn.close()
+        flash('Section not found.', 'danger')
+        return redirect(url_for('teacher_dashboard'))
+
+    req_sem = request.args.get('semester') or '1st Term'
+    if req_sem == 'Whole Year':
+        active_sem = 'Whole Year'
+    else:
+        active_sem = req_sem if req_sem in ALL_TERMS else '1st Term'
+
+    sel_period = request.args.get('period', 'all')
+
+    ph = ",".join(["?"] * len(sub_ids))
+    subjects = conn.execute(
+        f"SELECT id, subject_name, subject_code, semester FROM subjects WHERE id IN ({ph}) ORDER BY subject_name",
+        sub_ids
+    ).fetchall()
+
+    students = conn.execute(
+        "SELECT id, student_id, first_name, last_name, middle_name "
+        "FROM students WHERE section_id=? ORDER BY last_name, first_name",
+        (sec_id,)
+    ).fetchall()
+
+    # Determine periods columns
+    if sel_period != 'all':
+        all_periods = [sel_period]
+    else:
+        all_periods = []
+        for sub in subjects:
+            eff_sem = get_effective_semester(conn, sub['id'], sec_id, active_sem)
+            sem_q_rows = conn.execute(
+                "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id",
+                (eff_sem,)
+            ).fetchall()
+            base_periods = [r['period'] for r in sem_q_rows] if sem_q_rows else ALL_TERMS
+            for p in base_periods:
+                if p not in all_periods:
+                    all_periods.append(p)
+        if not all_periods:
+            all_periods = ALL_TERMS
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    headers = [
+        'subject_id', 'subject_code', 'subject_name', 'semester',
+        'student_id', 'last_name', 'first_name', 'middle_name'
+    ]
+    for p in all_periods:
+        headers += [f'{p}_WW', f'{p}_PT', f'{p}_QA']
+    writer.writerow(headers)
+
+    for sub in subjects:
+        sub_id = sub['id']
+        eff_sem = get_effective_semester(conn, sub_id, sec_id, active_sem)
+        grades_raw = conn.execute(
+            "SELECT student_id, quarter, written_works, performance_tasks, quarterly_assessment "
+            "FROM grades WHERE subject_id=? AND section_id=? AND semester=?",
+            (sub_id, sec_id, eff_sem)
+        ).fetchall()
+        grade_map = {}
+        for g in grades_raw:
+            grade_map.setdefault(g['student_id'], {})[g['quarter']] = g
+
+        for st in students:
+            row = [
+                sub_id, sub['subject_code'] or '', sub['subject_name'] or '', eff_sem,
+                st['student_id'], st['last_name'], st['first_name'], st['middle_name'] or ''
+            ]
+            for p in all_periods:
+                g = grade_map.get(st['id'], {}).get(p)
+                row += [
+                    g['written_works'] if g and g['written_works'] is not None else '',
+                    g['performance_tasks'] if g and g['performance_tasks'] is not None else '',
+                    g['quarterly_assessment'] if g and g['quarterly_assessment'] is not None else '',
+                ]
+            writer.writerow(row)
+
+    conn.close()
+
+    period_label = sel_period.replace(' ', '_').replace('-', '') if sel_period != 'all' else 'All'
+    safe_sem = (active_sem or '').replace(' ', '_')
+    filename = f"grades_{section['section_name']}_Teacher_{safe_sem}_{period_label}_AllSubjects.csv".replace(' ', '_')
+    csv_text = '\ufeff' + output.getvalue()
+    resp = make_response(csv_text)
+    resp.headers['Content-Type'] = 'text/csv; charset=utf-8'
+    resp.headers['Content-Disposition'] = f'attachment; filename=\"{filename}\"'
+    return resp
+
+
+# ── Admin export all subjects (XLSX; one sheet per subject) ──
+@app.route('/grades/section/<int:sec_id>/export_all')
+@login_required
+def admin_export_grades_all(sec_id):
+    # Backward-compat route: XLSX export removed, use combined CSV export instead.
+    return admin_export_grades_all_csv(sec_id)
+
+
+# ── Admin export all subjects (single CSV; subjects distinguished by subject_id) ──
+@app.route('/grades/section/<int:sec_id>/export_all_csv')
+@login_required
+def admin_export_grades_all_csv(sec_id):
+    conn = get_db()
+    section = conn.execute(
+        "SELECT id, section_name, grade_level FROM sections WHERE id=?",
+        (sec_id,)
+    ).fetchone()
+    if not section:
+        conn.close()
+        flash('Section not found.', 'danger')
+        return redirect(url_for('grades_home'))
+
+    # Match grade_sheet semester-tab behavior
+    is_jhs = section['grade_level'] in ('7', '8', '9', '10')
+    req_sem = request.args.get('semester') or request.args.get('sem') or '1st Term'
+    if is_jhs:
+        active_sem = 'Whole Year'
+    else:
+        if req_sem == 'Whole Year':
+            active_sem = 'Whole Year'
+        else:
+            active_sem = req_sem if req_sem in ALL_TERMS else '1st Term'
+
+    subjects_all = get_section_subjects(conn, sec_id, active_sem)
+    subjects = subjects_for_sem_tab(subjects_all, active_sem)
+    if not subjects:
+        conn.close()
+        flash('No subjects found for this section.', 'warning')
+        return redirect(url_for('grade_sheet', sec_id=sec_id, sem=active_sem))
+
+    students = conn.execute(
+        "SELECT id, student_id, first_name, last_name, middle_name "
+        "FROM students WHERE section_id=? ORDER BY last_name, first_name",
+        (sec_id,)
+    ).fetchall()
+
+    sel_period = request.args.get('period', 'all')
+
+    # Determine the columns (periods) to include
+    if sel_period != 'all':
+        all_periods = [sel_period]
+    else:
+        all_periods = []
+        for sub in subjects:
+            eff_sem = get_effective_semester(conn, sub['id'], sec_id, active_sem)
+            sem_q_rows = conn.execute(
+                "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id",
+                (eff_sem,)
+            ).fetchall()
+            base_periods = [r['period'] for r in sem_q_rows] if sem_q_rows else ALL_TERMS
+            for p in base_periods:
+                if p not in all_periods:
+                    all_periods.append(p)
+        if not all_periods:
+            all_periods = ALL_TERMS
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    headers = [
+        'subject_id', 'subject_code', 'subject_name', 'semester',
+        'student_id', 'last_name', 'first_name', 'middle_name'
+    ]
+    for p in all_periods:
+        headers += [f'{p}_WW', f'{p}_PT', f'{p}_QA']
+    writer.writerow(headers)
+
+    for sub in subjects:
+        sub_id = sub['id']
+        eff_sem = get_effective_semester(conn, sub_id, sec_id, active_sem)
+
+        grades_raw = conn.execute(
+            "SELECT student_id, quarter, written_works, performance_tasks, quarterly_assessment "
+            "FROM grades WHERE subject_id=? AND section_id=? AND semester=?",
+            (sub_id, sec_id, eff_sem)
+        ).fetchall()
+        grade_map = {}
+        for g in grades_raw:
+            grade_map.setdefault(g['student_id'], {})[g['quarter']] = g
+
+        for st in students:
+            row = [
+                sub_id, sub.get('subject_code') or '', sub.get('subject_name') or '', eff_sem,
+                st['student_id'], st['last_name'], st['first_name'], st['middle_name'] or ''
+            ]
+            for p in all_periods:
+                g = grade_map.get(st['id'], {}).get(p)
+                row += [
+                    g['written_works'] if g and g['written_works'] is not None else '',
+                    g['performance_tasks'] if g and g['performance_tasks'] is not None else '',
+                    g['quarterly_assessment'] if g and g['quarterly_assessment'] is not None else '',
+                ]
+            writer.writerow(row)
+
+    conn.close()
+
+    period_label = sel_period.replace(' ', '_').replace('-', '') if sel_period != 'all' else 'All'
+    safe_sem = (active_sem or '').replace(' ', '_')
+    filename = f"grades_{section['section_name']}_{safe_sem}_{period_label}_AllSubjects.csv".replace(' ', '_')
+
+    csv_text = '\ufeff' + output.getvalue()
+    resp = make_response(csv_text)
+    resp.headers['Content-Type'] = 'text/csv; charset=utf-8'
+    resp.headers['Content-Disposition'] = f'attachment; filename=\"{filename}\"'
+    return resp
+
 # ── Import grades from CSV (teacher) ──
 
-def get_effective_semester(conn, subject_id, section_id, fallback_sem='1st Semester'):
-    """Get the effective semester for grade storage.
-    For regular (1st/2nd) subjects: returns sub.semester directly.
-    For Whole Year or unset: uses fallback_sem (the active semester tab).
+def get_effective_semester(conn, subject_id, section_id, fallback_sem='1st Term'):
+    """Get the effective scope for grade storage.
+    - If subject has an explicit scope (1st/2nd/3rd Term or legacy 1st/2nd Semester): use it.
+    - If subject is Whole Year: store under 'Whole Year'.
+    - Otherwise: use fallback_sem (active term tab).
     """
     sub = conn.execute("SELECT semester FROM subjects WHERE id=?", (subject_id,)).fetchone()
     if not sub:
         return fallback_sem
     sub_sem = (sub['semester'] or '').strip()
-    if sub_sem in ('1st Semester', '2nd Semester'):
+    if sub_sem in ('1st Term', '2nd Term', '3rd Term', '1st Semester', '2nd Semester'):
         return sub_sem
-    # Whole Year, 'Whole Year', or blank — caller must pass correct active_sem as fallback
+    if sub_sem == 'Whole Year':
+        return 'Whole Year'
     return fallback_sem
 @app.route('/teacher/grade_sheet/<int:sec_id>/<int:sub_id>/import', methods=['POST'])
 @teacher_required
@@ -4320,7 +4839,7 @@ def teacher_import_grades(sec_id, sub_id):
         return jsonify({'ok': False, 'error': 'Not authorized'}), 403
 
     # Block if any period is not Draft — scoped to this semester
-    import_sem = request.form.get('semester') or request.args.get('semester') or '1st Semester'
+    import_sem = request.form.get('semester') or request.args.get('semester') or '1st Term'
     import_eff_sem = get_effective_semester(conn, sub_id, sec_id, import_sem)
     locked_periods = conn.execute(
         "SELECT quarter FROM grade_submissions WHERE subject_id=? AND section_id=? AND semester=? AND status != 'Draft'",
@@ -4354,7 +4873,7 @@ def teacher_import_grades(sec_id, sub_id):
     student_map = {s['student_id']: s['id'] for s in students}
 
     # Determine effective semester for grade storage
-    fallback_sem = request.form.get('semester') or request.args.get('semester') or '1st Semester'
+    fallback_sem = request.form.get('semester') or request.args.get('semester') or '1st Term'
     eff_sem = get_effective_semester(conn, sub_id, sec_id, fallback_sem)
 
     # Scope to quarters for this semester only
@@ -4424,6 +4943,118 @@ def teacher_import_grades(sec_id, sub_id):
         'error_msgs': error_msgs[:10]  # cap at 10
     })
 
+# ── Import all grades for a teacher+section (single CSV; subjects distinguished by subject_id) ──
+@app.route('/teacher/grade_sheet/<int:sec_id>/import_all_csv', methods=['POST'])
+@teacher_required
+def teacher_import_grades_all_csv(sec_id):
+    tid = session['teacher_id']
+    conn = get_db()
+
+    assigned_rows = conn.execute(
+        "SELECT DISTINCT subject_id FROM schedules WHERE teacher_id=? AND section_id=?",
+        (tid, sec_id)
+    ).fetchall()
+    allowed_subject_ids = {r['subject_id'] for r in assigned_rows}
+    if not allowed_subject_ids:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'No assigned subjects found for this section.'}), 400
+
+    file = request.files.get('csv_file') or request.files.get('file')
+    if not file:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'No file uploaded.'}), 400
+
+    try:
+        content_str = file.read().decode('utf-8-sig')
+        reader = csv.DictReader(io.StringIO(content_str))
+    except Exception as e:
+        conn.close()
+        return jsonify({'ok': False, 'error': f'Could not read CSV: {e}'}), 400
+
+    fields = [f.strip() for f in (reader.fieldnames or []) if f]
+    if 'subject_id' not in fields or 'student_id' not in fields:
+        conn.close()
+        return jsonify({'ok': False, 'error': "Invalid CSV format. Required columns: subject_id, student_id."}), 400
+
+    students = conn.execute(
+        "SELECT id, student_id FROM students WHERE section_id=?",
+        (sec_id,)
+    ).fetchall()
+    student_map = {s['student_id']: s['id'] for s in students}
+
+    req_sem = request.form.get('semester') or request.args.get('semester') or '1st Term'
+    if req_sem == 'Whole Year':
+        active_sem = 'Whole Year'
+    else:
+        active_sem = req_sem if req_sem in ALL_TERMS else '1st Term'
+
+    total_updated = total_skipped = total_errors = 0
+    skipped_locked_subjects = set()
+    all_error_msgs = []
+
+    eff_sem_cache = {}
+    periods_cache = {}
+    locked_cache = {}
+
+    for line_no, row in enumerate(reader, start=2):
+        sub_id_raw = (row.get('subject_id') or '').strip()
+        if not sub_id_raw:
+            total_skipped += 1
+            continue
+        try:
+            sub_id = int(float(sub_id_raw))
+        except Exception:
+            total_errors += 1
+            all_error_msgs.append(f"Row {line_no}: Invalid subject_id '{sub_id_raw}'.")
+            continue
+
+        if sub_id not in allowed_subject_ids:
+            total_skipped += 1
+            continue
+
+        if sub_id not in eff_sem_cache:
+            eff_sem_cache[sub_id] = get_effective_semester(conn, sub_id, sec_id, active_sem)
+        eff_sem = eff_sem_cache[sub_id]
+
+        if sub_id not in locked_cache:
+            locked_periods = conn.execute(
+                "SELECT quarter FROM grade_submissions WHERE subject_id=? AND section_id=? AND semester=? AND status != 'Draft'",
+                (sub_id, sec_id, eff_sem)
+            ).fetchall()
+            locked_cache[sub_id] = bool(locked_periods)
+        if locked_cache[sub_id]:
+            skipped_locked_subjects.add(sub_id)
+            total_skipped += 1
+            continue
+
+        if sub_id not in periods_cache:
+            sem_q_rows = conn.execute(
+                "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id",
+                (eff_sem,)
+            ).fetchall()
+            periods_cache[sub_id] = [r['period'] for r in sem_q_rows] if sem_q_rows else ALL_TERMS
+        periods = periods_cache[sub_id]
+
+        updated, skipped, errors, error_msgs = _import_grades_rows(
+            conn, sec_id, sub_id, eff_sem, periods, [row], student_map, start_row=line_no
+        )
+        total_updated += updated
+        total_skipped += skipped
+        total_errors += errors
+        if error_msgs:
+            all_error_msgs.extend(error_msgs)
+
+    conn.commit()
+    conn.close()
+    return jsonify({
+        'ok': True,
+        'updated': total_updated,
+        'skipped': total_skipped,
+        'errors': total_errors,
+        'skipped_locked_subjects': sorted(skipped_locked_subjects)[:10],
+        'error_msgs': all_error_msgs[:10],
+    })
+
 # ── Admin import ──
 @app.route('/grades/section/<int:sec_id>/import', methods=['POST'])
 @login_required
@@ -4455,7 +5086,7 @@ def admin_import_grades(sec_id):
     student_map = {s['student_id']: s['id'] for s in students}
 
     # Determine effective semester for grade storage
-    fallback_sem = request.args.get('semester') or '1st Semester'
+    fallback_sem = request.args.get('semester') or '1st Term'
     eff_sem = get_effective_semester(conn, sub_id, sec_id, fallback_sem)
 
     # Scope to quarters for this semester only
@@ -4518,6 +5149,177 @@ def admin_import_grades(sec_id):
     conn.close()
     return jsonify({'ok': True, 'updated': updated, 'skipped': skipped, 'errors': errors, 'error_msgs': error_msgs[:10]})
 
+
+def _import_grades_rows(conn, sec_id, sub_id, eff_sem, periods, rows, student_map, start_row=2):
+    """Shared import core for admin multi-subject import."""
+    COMPONENTS = ['WW', 'PT', 'QA']
+    COMP_FULL  = {'WW': 'written_works', 'PT': 'performance_tasks', 'QA': 'quarterly_assessment'}
+
+    updated = skipped = errors = 0
+    error_msgs = []
+
+    for i, row in enumerate(rows, start=start_row):
+        sid_str = (row.get('student_id') or '').strip()
+        if not sid_str:
+            skipped += 1
+            continue
+        db_sid = student_map.get(sid_str)
+        if not db_sid:
+            error_msgs.append(f"Row {i}: Student ID '{sid_str}' not found.")
+            errors += 1
+            continue
+
+        for p in periods:
+            for comp in COMPONENTS:
+                col = f'{p}_{comp}'
+                val_str = (row.get(col) or '').strip()
+                if val_str == '':
+                    continue
+                try:
+                    val = float(val_str)
+                    if val < 0 or val > 100:
+                        raise ValueError
+                except ValueError:
+                    error_msgs.append(f"Row {i}: Invalid value '{val_str}' for {col}.")
+                    errors += 1
+                    continue
+
+                db_col = COMP_FULL[comp]
+                existing = conn.execute(
+                    "SELECT id FROM grades WHERE student_id=? AND subject_id=? AND section_id=? AND semester=? AND quarter=?",
+                    (db_sid, sub_id, sec_id, eff_sem, p)
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        f"UPDATE grades SET {db_col}=?, updated_at=datetime('now') WHERE student_id=? AND subject_id=? AND section_id=? AND semester=? AND quarter=?",
+                        (val, db_sid, sub_id, sec_id, eff_sem, p)
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO grades (student_id,subject_id,section_id,semester,quarter,written_works,performance_tasks,quarterly_assessment) VALUES (?,?,?,?,?,?,?,?)",
+                        (db_sid, sub_id, sec_id, eff_sem, p,
+                         val if db_col == 'written_works' else None,
+                         val if db_col == 'performance_tasks' else None,
+                         val if db_col == 'quarterly_assessment' else None)
+                    )
+                updated += 1
+
+    return updated, skipped, errors, error_msgs
+
+
+# ── Admin import all subjects (XLSX; one sheet per subject) ──
+@app.route('/grades/section/<int:sec_id>/import_all', methods=['POST'])
+@login_required
+def admin_import_grades_all(sec_id):
+    # Backward-compat route: XLSX import removed, use combined CSV import instead.
+    return admin_import_grades_all_csv(sec_id)
+
+
+# ── Admin import all subjects (single CSV; subjects distinguished by subject_id) ──
+@app.route('/grades/section/<int:sec_id>/import_all_csv', methods=['POST'])
+@login_required
+def admin_import_grades_all_csv(sec_id):
+    conn = get_db()
+    section = conn.execute(
+        "SELECT id, grade_level FROM sections WHERE id=?",
+        (sec_id,)
+    ).fetchone()
+    if not section:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Section not found.'}), 404
+
+    file = request.files.get('csv_file') or request.files.get('xlsx_file') or request.files.get('file')
+    if not file:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'No file uploaded.'}), 400
+
+    try:
+        raw = file.read().decode('utf-8-sig')
+        reader = csv.DictReader(io.StringIO(raw))
+    except Exception as e:
+        conn.close()
+        return jsonify({'ok': False, 'error': f'Could not read CSV: {e}'}), 400
+
+    # Match grade_sheet semester-tab behavior
+    is_jhs = section['grade_level'] in ('7', '8', '9', '10')
+    req_sem = request.args.get('semester') or request.args.get('sem') or '1st Term'
+    if is_jhs:
+        active_sem = 'Whole Year'
+    else:
+        if req_sem == 'Whole Year':
+            active_sem = 'Whole Year'
+        else:
+            active_sem = req_sem if req_sem in ALL_TERMS else '1st Term'
+
+    subjects_all = get_section_subjects(conn, sec_id, active_sem)
+    subjects = subjects_for_sem_tab(subjects_all, active_sem)
+    allowed_subject_ids = {s['id'] for s in subjects}
+
+    students = conn.execute(
+        "SELECT id, student_id FROM students WHERE section_id=?",
+        (sec_id,)
+    ).fetchall()
+    student_map = {s['student_id']: s['id'] for s in students}
+
+    total_updated = total_skipped = total_errors = 0
+    all_error_msgs = []
+    subjects_seen = set()
+    subjects_skipped = 0
+
+    eff_sem_cache = {}
+    periods_cache = {}
+
+    for line_no, row in enumerate(reader, start=2):
+        sub_id_raw = (row.get('subject_id') or '').strip()
+        if not sub_id_raw:
+            total_skipped += 1
+            continue
+        try:
+            sub_id = int(float(sub_id_raw))
+        except Exception:
+            total_errors += 1
+            all_error_msgs.append(f"Row {line_no}: Invalid subject_id '{sub_id_raw}'.")
+            continue
+
+        if sub_id not in allowed_subject_ids:
+            subjects_skipped += 1
+            total_skipped += 1
+            continue
+
+        if sub_id not in eff_sem_cache:
+            eff_sem_cache[sub_id] = get_effective_semester(conn, sub_id, sec_id, active_sem)
+        eff_sem = eff_sem_cache[sub_id]
+
+        if sub_id not in periods_cache:
+            sem_q_rows = conn.execute(
+                "SELECT period FROM grading_period_settings WHERE semester=? ORDER BY id",
+                (eff_sem,)
+            ).fetchall()
+            periods_cache[sub_id] = [r['period'] for r in sem_q_rows] if sem_q_rows else ALL_TERMS
+        periods = periods_cache[sub_id]
+
+        updated, skipped, errors, error_msgs = _import_grades_rows(
+            conn, sec_id, sub_id, eff_sem, periods, [row], student_map, start_row=line_no
+        )
+        total_updated += updated
+        total_skipped += skipped
+        total_errors += errors
+        if error_msgs:
+            all_error_msgs.extend(error_msgs)
+        subjects_seen.add(sub_id)
+
+    conn.commit()
+    conn.close()
+    return jsonify({
+        'ok': True,
+        'updated': total_updated,
+        'skipped': total_skipped,
+        'errors': total_errors,
+        'subjects_processed': len(subjects_seen),
+        'subjects_skipped': subjects_skipped,
+        'error_msgs': all_error_msgs[:10],
+    })
+
 @app.route('/teacher/submit_quarter', methods=['POST'])
 @teacher_required
 def teacher_submit_quarter():
@@ -4573,7 +5375,7 @@ def teacher_portal_profile():
     schedules = conn.execute("""
         SELECT sc.id, sc.day, sc.time_start, sc.time_end, sc.room,
                sc.subject_id, sc.section_id,
-               COALESCE(sc.semester, sub.semester) AS sem,
+               COALESCE(NULLIF(sc.semester,''), sub.semester) AS sem,
                sub.subject_name, sub.subject_code,
                sec.section_name, sec.grade_level, st.strand_code,
                '' AS teacher_name
@@ -4665,7 +5467,7 @@ def student_dashboard():
                sc.subject_id, sc.section_id,
                sub.subject_name, sub.subject_code,
                t.first_name||' '||t.last_name AS teacher_name,
-               COALESCE(sc.semester, sub.semester) AS sem
+               COALESCE(NULLIF(sc.semester,''), sub.semester) AS sem
         FROM schedules sc
         JOIN subjects  sub ON sc.subject_id=sub.id
         JOIN teachers  t   ON sc.teacher_id=t.id

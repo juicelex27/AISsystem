@@ -88,7 +88,7 @@
     {% endif %}
   </div>
 
-  {% set has_any_rows = sem_data['1st Semester'].rows or sem_data['2nd Semester'].rows %}
+  {% set has_any_rows = sem_data['1st Term'].rows or sem_data['2nd Term'].rows or sem_data['3rd Term'].rows %}
   {% if has_any_rows %}
   <div style="overflow-x:auto;">
     <table class="rc-table">
@@ -104,13 +104,13 @@
       </thead>
       <tbody>
 
-      {% for sem_name in ['1st Semester', '2nd Semester'] %}
+      {% for sem_name in ['1st Term', '2nd Term', '3rd Term'] %}
       {% set sd = sem_data[sem_name] %}
       {% if sd.rows %}
-      <!-- Semester header -->
+      <!-- Term header -->
       <tr class="sem-header">
         <td colspan="7">
-          {{ '📗' if '1st' in sem_name else '📘' }} {{ sem_name }}
+          {{ '📗' if sem_name=='1st Term' else ('📘' if sem_name=='2nd Term' else '📙') }} {{ sem_name }}
           {% if sd.avg is not none %} — Average: {{ '%.2f'|format(sd.avg) }}{% endif %}
         </td>
       </tr>
@@ -155,7 +155,7 @@
       </tr>
       {% endfor %}
 
-      <!-- Semester average row -->
+      <!-- Term average row -->
       {% if sd.avg is not none %}
       <tr class="sem-avg-row">
         <td class="col-sub">{{ sem_name }} Average</td>

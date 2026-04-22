@@ -48,6 +48,7 @@
 }
 .load-bar-fill.s1 { background: linear-gradient(90deg,#3b82f6,#6366f1); }
 .load-bar-fill.s2 { background: linear-gradient(90deg,#a855f7,#ec4899); }
+.load-bar-fill.s3 { background: linear-gradient(90deg,#22c55e,#10b981); }
 .load-bar-fill.full { background: linear-gradient(90deg,#ef4444,#f97316); }
 .load-bar-count {
   font-size: 11px;
@@ -89,10 +90,12 @@
       <tbody>
         {% for t in teachers %}
         {% set load = workload_map.get(t.id, {}) %}
-        {% set s1 = load.get('1st Semester', 0) %}
-        {% set s2 = load.get('2nd Semester', 0) %}
+        {% set s1 = load.get('1st Term', 0) %}
+        {% set s2 = load.get('2nd Term', 0) %}
+        {% set s3 = load.get('3rd Term', 0) %}
         {% set s1_pct = [(s1 / max_sections * 100), 100] | min %}
         {% set s2_pct = [(s2 / max_sections * 100), 100] | min %}
+        {% set s3_pct = [(s3 / max_sections * 100), 100] | min %}
         <tr>
           <td style="color:#9ca3af;font-size:12px;">{{ loop.index }}</td>
           <td>
@@ -108,7 +111,7 @@
           <td style="color:#6b7280;">{{ t.email }}</td>
           <td><span class="badge badge-section">{{ t.username }}</span></td>
           <td>
-            {% if s1 == 0 and s2 == 0 %}
+            {% if s1 == 0 and s2 == 0 and s3 == 0 %}
               <span class="no-load">No schedule yet</span>
             {% else %}
             <div class="load-bar-wrap">
@@ -133,6 +136,18 @@
                 </div>
                 <span class="load-bar-count {{ 'warn' if s2 >= max_sections else '' }}">
                   {{ s2 }}/{{ max_sections }}
+                </span>
+              </div>
+              {% endif %}
+              {% if s3 > 0 %}
+              <div class="load-bar-row">
+                <span class="load-bar-label">3rd</span>
+                <div class="load-bar-track">
+                  <div class="load-bar-fill {{ 'full' if s3 >= max_sections else 's3' }}"
+                       style="width:{{ s3_pct }}%;"></div>
+                </div>
+                <span class="load-bar-count {{ 'warn' if s3 >= max_sections else '' }}">
+                  {{ s3 }}/{{ max_sections }}
                 </span>
               </div>
               {% endif %}

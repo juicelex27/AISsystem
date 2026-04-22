@@ -94,7 +94,12 @@ a{text-decoration:none;color:inherit}
 .top-header{height:var(--header-height);background:rgba(255,255,255,.95);backdrop-filter:blur(10px);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 28px;position:sticky;top:0;z-index:50;box-shadow:var(--shadow-sm)}
 .header-title h1{font-size:18px;font-weight:700;color:var(--text-primary);letter-spacing:-.3px}
 .header-title p{font-size:12px;color:var(--text-secondary);margin-top:1px}
-.header-actions{display:flex;align-items:center;gap:10px}
+.header-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.action-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.header-actions .action-group{padding:4px;border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.6)}
+.header-actions .action-group:empty{display:none}
+.header-actions .form-control{padding:6px 10px;font-size:13px;height:32px}
+.header-actions .btn{white-space:nowrap}
 .page-body{flex:1;padding:28px;display:flex;flex-direction:column;gap:24px}
 
 /* ── STAT CARDS ── */
