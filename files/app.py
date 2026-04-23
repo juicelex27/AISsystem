@@ -73,11 +73,12 @@ def init_db():
         CREATE TABLE IF NOT EXISTS subject_section_offerings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             subject_id INTEGER NOT NULL,
-            section_id INTEGER NOT NULL,
-            UNIQUE(subject_id, section_id),
+            section_id INTEGER,  -- Allow NULL for "all sections" marker
+            semester TEXT DEFAULT '',
+            UNIQUE(subject_id, section_id, semester),
             FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE,
             FOREIGN KEY (section_id) REFERENCES sections(id) ON DELETE CASCADE
-        );
+);
         CREATE TABLE IF NOT EXISTS strands (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             strand_code TEXT UNIQUE NOT NULL,
@@ -1184,52 +1185,63 @@ def shs_offerings():
 @app.route('/shs/offerings/set/<int:sid>', methods=['POST'])
 @login_required
 def shs_set_offering(sid):
-    shs_type = (request.form.get('shs_type') or '').strip()
-    if shs_type not in ('', 'Core', 'Elective', 'Special'):
-        flash('Invalid SHS type.', 'danger')
+    shs_type_raw = request.form.get('shs_type')
+    print(f"DEBUG: shs_type_raw = {repr(shs_type_raw)}")
+    shs_type = (shs_type_raw or '').strip()
+    print(f"DEBUG: shs_type after processing = {repr(shs_type)}")
+    allowed_types = ('', 'Core', 'Elective', 'Field', 'Special')
+    print(f"DEBUG: allowed_types = {allowed_types}")
+    print(f"DEBUG: shs_type in allowed_types = {shs_type in allowed_types}")
+    if shs_type not in allowed_types:
+        print(f"DEBUG: validation failed for shs_type = {repr(shs_type)}")
+        flash(f'Invalid SHS type: "{shs_type}" not in {allowed_types}', 'danger')
         return redirect(url_for('shs_offerings'))
 
     section_ids = [int(x) for x in request.form.getlist('section_ids') if str(x).isdigit()]
+    field_terms = request.form.getlist('field_terms')
 
     conn = get_db()
-    conn.execute("UPDATE subjects SET shs_type=? WHERE id=?", (shs_type, sid))
+    try:
+        conn.execute("UPDATE subjects SET shs_type=? WHERE id=?", (shs_type, sid))
+        
+        if shs_type == 'Field' and field_terms:
+            semester_value = ','.join(sorted(set(field_terms)))
+            conn.execute("UPDATE subjects SET semester=? WHERE id=?", (semester_value, sid))
+        elif shs_type == 'Field':
+            conn.execute("UPDATE subjects SET semester='' WHERE id=?", (sid,))
 
-    # Only electives store explicit section offerings; core is automatic, special is handled by scheduling rules.
-    conn.execute("DELETE FROM subject_section_offerings WHERE subject_id=?", (sid,))
-    if shs_type == 'Elective':
-        for sec_id in sorted(set(section_ids)):
-            conn.execute(
-                "INSERT OR IGNORE INTO subject_section_offerings (subject_id, section_id) VALUES (?, ?)",
-                (sid, sec_id)
-            )
+        conn.execute("DELETE FROM subject_section_offerings WHERE subject_id=?", (sid,))
+        
+        if shs_type == 'Elective' and section_ids:
+            for sec_id in sorted(set(section_ids)):
+                conn.execute(
+                    "INSERT OR IGNORE INTO subject_section_offerings (subject_id, section_id, semester) VALUES (?, ?, '')",
+                    (sid, sec_id)
+                )
+        elif shs_type == 'Field':
+            if section_ids and field_terms:
+                for term in sorted(set(field_terms)):
+                    for sec_id in sorted(set(section_ids)):
+                        conn.execute(
+                            "INSERT OR IGNORE INTO subject_section_offerings (subject_id, section_id, semester) VALUES (?, ?, ?)",
+                            (sid, sec_id, term)
+                        )
+            elif field_terms and not section_ids:
+                for term in sorted(set(field_terms)):
+                    conn.execute(
+                        "INSERT INTO subject_section_offerings (subject_id, section_id, semester) VALUES (?, NULL, ?)",
+                        (sid, term)
+                    )
 
-    conn.commit(); conn.close()
-    flash('SHS offering updated.', 'success')
-    return redirect(url_for('shs_offerings'))@app.route('/shs/offerings/set/<int:sid>', methods=['POST'])
-@login_required
-def shs_set_offering(sid):
-    shs_type = (request.form.get('shs_type') or '').strip()
-    if shs_type not in ('', 'Core', 'Elective', 'Field', 'Special'):
-        flash('Invalid SHS type.', 'danger')
-        return redirect(url_for('shs_offerings'))
- 
-    section_ids = [int(x) for x in request.form.getlist('section_ids') if str(x).isdigit()]
- 
-    conn = get_db()
-    conn.execute("UPDATE subjects SET shs_type=? WHERE id=?", (shs_type, sid))
- 
-    # Electives store explicit section offerings.
-    # Core, Field, and Special are automatic / all-sections — no explicit offerings needed.
-    conn.execute("DELETE FROM subject_section_offerings WHERE subject_id=?", (sid,))
-    if shs_type == 'Elective':
-        for sec_id in sorted(set(section_ids)):
-            conn.execute(
-                "INSERT OR IGNORE INTO subject_section_offerings (subject_id, section_id) VALUES (?, ?)",
-                (sid, sec_id)
-            )
- 
-    conn.commit(); conn.close()
-    flash('SHS offering updated.', 'success')
+        conn.commit()
+        flash('SHS offering updated.', 'success')
+    except Exception as e:
+        conn.rollback()
+        flash(f'Error updating SHS offering: {str(e)}', 'danger')
+        print(f"Database error in shs_set_offering: {e}")
+    finally:
+        conn.close()
+    
     return redirect(url_for('shs_offerings'))
  
 
