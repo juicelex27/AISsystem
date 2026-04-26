@@ -1,10 +1,13 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, Response, make_response
+from functools import wraps
+import os
 import sqlite3
 import hashlib
 import csv
 import io
 import random
-from functools import wraps
+import re
+from datetime import datetime
 
 app = Flask(__name__)
 app.secret_key = 'sis_secret_key_2024_secure'
@@ -12,12 +15,14 @@ app.secret_key = 'sis_secret_key_2024_secure'
 @app.template_filter('clean_mn')
 def clean_mn_filter(val):
     return clean_middle_name(val)
-DATABASE = 'school.db'
+DATABASE = os.path.join(os.path.dirname(__file__), 'school.db')
 
 def get_db():
-    conn = sqlite3.connect(DATABASE)
+    conn = sqlite3.connect(DATABASE, timeout=30.0)  # Add timeout to avoid locks
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")  # Use WAL mode for better concurrency
+    conn.execute("PRAGMA synchronous = NORMAL")  # Balance performance and safety
     return conn
 
 def hash_password(password):
@@ -73,12 +78,11 @@ def init_db():
         CREATE TABLE IF NOT EXISTS subject_section_offerings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             subject_id INTEGER NOT NULL,
-            section_id INTEGER,  -- Allow NULL for "all sections" marker
-            semester TEXT DEFAULT '',
-            UNIQUE(subject_id, section_id, semester),
+            section_id INTEGER NOT NULL,
+            UNIQUE(subject_id, section_id),
             FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE,
             FOREIGN KEY (section_id) REFERENCES sections(id) ON DELETE CASCADE
-);
+        );
         CREATE TABLE IF NOT EXISTS strands (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             strand_code TEXT UNIQUE NOT NULL,
@@ -236,12 +240,61 @@ def init_db():
             CREATE TABLE IF NOT EXISTS subject_section_offerings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 subject_id INTEGER NOT NULL,
-                section_id INTEGER NOT NULL,
-                UNIQUE(subject_id, section_id),
+                section_id INTEGER,  -- Allow NULL for "all sections" marker
+                semester TEXT DEFAULT '',
+                UNIQUE(subject_id, section_id, semester),
                 FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE,
                 FOREIGN KEY (section_id) REFERENCES sections(id) ON DELETE CASCADE
             )
         """)
+    except Exception:
+        pass
+    # Migrate existing subject_section_offerings to new schema with semester column  
+    try:
+        conn.execute("ALTER TABLE subject_section_offerings ADD COLUMN semester TEXT DEFAULT ''")
+    except Exception:
+        pass
+    
+    # Check if table has old constraint (UNIQUE on 2 cols instead of 3) or old NOT NULL section_id
+    try:
+        table_info = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='subject_section_offerings'").fetchone()
+        fix_table = False
+        if table_info:
+            sql_text = table_info[0] or ''
+            if 'UNIQUE(subject_id, section_id, semester)' not in sql_text:
+                fix_table = True
+            else:
+                info_rows = conn.execute("PRAGMA table_info(subject_section_offerings)").fetchall()
+                if any(row['name'] == 'section_id' and row['notnull'] == 1 for row in info_rows):
+                    fix_table = True
+
+        if fix_table:
+            # Backup data
+            backup_data = conn.execute("SELECT id, subject_id, section_id, COALESCE(semester, '') as semester FROM subject_section_offerings").fetchall()
+            
+            # Drop and recreate
+            conn.execute("DROP TABLE IF EXISTS subject_section_offerings")
+            conn.execute("""
+                CREATE TABLE subject_section_offerings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    subject_id INTEGER NOT NULL,
+                    section_id INTEGER,  -- Allow NULL for "all sections" marker
+                    semester TEXT DEFAULT '',
+                    UNIQUE(subject_id, section_id, semester),
+                    FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE,
+                    FOREIGN KEY (section_id) REFERENCES sections(id) ON DELETE CASCADE
+                )
+            """)
+            
+            # Restore data
+            for row in backup_data:
+                section_id = None if row['section_id'] == -1 else row['section_id']
+                conn.execute("INSERT INTO subject_section_offerings (id, subject_id, section_id, semester) VALUES (?, ?, ?, ?)",
+                           (row['id'], row['subject_id'], section_id, row['semester']))
+    except Exception:
+        pass
+    try:
+        conn.execute("UPDATE subject_section_offerings SET section_id=NULL WHERE section_id=-1")
     except Exception:
         pass
     # Seed legacy single default teacher into the new multi-teacher table (if any)
@@ -1142,12 +1195,29 @@ def get_subject(sid):
         "SELECT section_id FROM subject_section_offerings WHERE subject_id=? ORDER BY section_id",
         (sid,)
     ).fetchall()
+    
+    # For Field subjects, also get sections grouped by term
+    sec_by_term = {}
+    if s['shs_type'] == 'Field':
+        term_sections = conn.execute(
+            "SELECT DISTINCT semester, section_id FROM subject_section_offerings WHERE subject_id=? ORDER BY semester, section_id",
+            (sid,)
+        ).fetchall()
+        for row in term_sections:
+            term = row['semester'] or ''
+            sec_id = row['section_id']
+            if sec_id is not None:  # NULL means "all sections"
+                if term not in sec_by_term:
+                    sec_by_term[term] = []
+                sec_by_term[term].append(sec_id)
+    
     conn.close()
     if not s:
         return jsonify({}), 404
     d = dict(s)
     d['teacher_ids'] = [r['teacher_id'] for r in tids]
-    d['offering_section_ids'] = [r['section_id'] for r in sec_ids]
+    d['offering_section_ids'] = [r['section_id'] for r in sec_ids if r['section_id'] is not None]  # Filter out NULL (all sections marker)
+    d['offering_sections_by_term'] = sec_by_term  # New: sections grouped by term
     return jsonify(d)
 
 
@@ -1161,13 +1231,33 @@ def shs_offerings():
                COALESCE((
                    SELECT GROUP_CONCAT(name, ', ')
                    FROM (
-                       SELECT sec.section_name AS name
+                       SELECT DISTINCT sec.section_name AS name
                        FROM subject_section_offerings sso
                        JOIN sections sec ON sec.id = sso.section_id
-                       WHERE sso.subject_id = sub.id
-                       ORDER BY sec.grade_level, sec.section_name
+                       WHERE sso.subject_id = sub.id AND sso.section_id IS NOT NULL
+                       ORDER BY sec.section_name
                    )
-               ), '') AS offered_sections
+               ), '') AS offered_sections,
+               COALESCE((
+                   SELECT GROUP_CONCAT(
+                       CASE 
+                           WHEN sso.semester = '' THEN 'All Terms'
+                           WHEN sso.section_id IS NULL THEN sso.semester || ': All sections'
+                           ELSE sso.semester || ': ' || (
+                               SELECT GROUP_CONCAT(sec2.section_name, ', ')
+                               FROM subject_section_offerings sso2
+                               JOIN sections sec2 ON sec2.id = sso2.section_id
+                               WHERE sso2.subject_id = sso.subject_id AND sso2.semester = sso.semester
+                               ORDER BY sec2.section_name
+                           )
+                       END, '; ')
+                   FROM (
+                       SELECT DISTINCT subject_id, semester, section_id
+                       FROM subject_section_offerings
+                       WHERE subject_id = sub.id
+                       ORDER BY semester
+                   ) sso
+               ), '') AS sections_by_term
         FROM subjects sub
         WHERE sub.grade_level IN ('11','12')
         ORDER BY sub.grade_level, sub.subject_name
@@ -1198,21 +1288,27 @@ def shs_set_offering(sid):
         return redirect(url_for('shs_offerings'))
 
     section_ids = [int(x) for x in request.form.getlist('section_ids') if str(x).isdigit()]
-    field_terms = request.form.getlist('field_terms')
+    field_terms = request.form.getlist('field_terms')  # Multiple term selection for Field subjects
 
     conn = get_db()
     try:
+        # Update shs_type
         conn.execute("UPDATE subjects SET shs_type=? WHERE id=?", (shs_type, sid))
         
+        # For Field subjects: store selected terms as comma-separated in semester field
         if shs_type == 'Field' and field_terms:
             semester_value = ','.join(sorted(set(field_terms)))
             conn.execute("UPDATE subjects SET semester=? WHERE id=?", (semester_value, sid))
         elif shs_type == 'Field':
+            # If no terms selected for Field, clear semester
             conn.execute("UPDATE subjects SET semester='' WHERE id=?", (sid,))
 
+        # Store explicit section offerings for Elective and Field types
+        # For Field subjects, also store with term scope
         conn.execute("DELETE FROM subject_section_offerings WHERE subject_id=?", (sid,))
         
         if shs_type == 'Elective' and section_ids:
+            # Electives: sections without term (empty semester)
             for sec_id in sorted(set(section_ids)):
                 conn.execute(
                     "INSERT OR IGNORE INTO subject_section_offerings (subject_id, section_id, semester) VALUES (?, ?, '')",
@@ -1220,6 +1316,7 @@ def shs_set_offering(sid):
                 )
         elif shs_type == 'Field':
             if section_ids and field_terms:
+                # Field: save sections FOR EACH SELECTED TERM
                 for term in sorted(set(field_terms)):
                     for sec_id in sorted(set(section_ids)):
                         conn.execute(
@@ -1227,10 +1324,11 @@ def shs_set_offering(sid):
                             (sid, sec_id, term)
                         )
             elif field_terms and not section_ids:
+                # Field with no specific sections = all sections; store terms to track scope
                 for term in sorted(set(field_terms)):
                     conn.execute(
                         "INSERT INTO subject_section_offerings (subject_id, section_id, semester) VALUES (?, NULL, ?)",
-                        (sid, term)
+                        (sid, term)  # NULL means "all sections for this term"
                     )
 
         conn.commit()
@@ -1243,7 +1341,7 @@ def shs_set_offering(sid):
         conn.close()
     
     return redirect(url_for('shs_offerings'))
- 
+
 
 # ── STRANDS ──
 @app.route('/strands')
@@ -1848,8 +1946,10 @@ def schedule(sec_id):
         (sec_id,)
     ).fetchone()[0]
 
-    auto_jhs_subjects = []
+    auto_schedule_subjects = []
+    auto_schedule_type = ''
     show_auto_schedule_button = False
+
     if section['grade_level'] in ('Grade 7', 'Grade 8', 'Grade 9', 'Grade 10'):
         # For JHS, show subjects based on the section's strand
         if section['strand_id']:
@@ -1871,9 +1971,20 @@ def schedule(sec_id):
                        COALESCE(sch.id, '') AS schedule_id
                 FROM subjects sub
                 JOIN strand_subjects ss ON ss.subject_id = sub.id
-                LEFT JOIN assignments a ON a.subject_id = sub.id AND a.section_id = ?
+                LEFT JOIN (
+                    SELECT subject_id, MIN(teacher_id) AS teacher_id
+                    FROM assignments
+                    WHERE section_id = ?
+                    GROUP BY subject_id
+                ) a ON a.subject_id = sub.id
                 LEFT JOIN teachers t ON t.id = a.teacher_id
-                LEFT JOIN schedules sch ON sch.subject_id = sub.id AND sch.section_id = ?
+                LEFT JOIN (
+                    SELECT subject_id, MIN(id) AS schedule_id
+                    FROM schedules
+                    WHERE section_id = ?
+                    GROUP BY subject_id
+                ) sch_ids ON sch_ids.subject_id = sub.id
+                LEFT JOIN schedules sch ON sch.id = sch_ids.schedule_id
                 LEFT JOIN teachers t2 ON t2.id = sch.teacher_id
                 LEFT JOIN teachers td ON td.id = (
                     SELECT CASE WHEN COUNT(*)=1 THEN MAX(teacher_id) ELSE NULL END
@@ -1900,9 +2011,20 @@ def schedule(sec_id):
                        COALESCE(sch.time_start, '') AS scheduled_time_start,
                        COALESCE(sch.id, '') AS schedule_id
                 FROM subjects sub
-                LEFT JOIN assignments a ON a.subject_id = sub.id AND a.section_id = ?
+                LEFT JOIN (
+                    SELECT subject_id, MIN(teacher_id) AS teacher_id
+                    FROM assignments
+                    WHERE section_id = ?
+                    GROUP BY subject_id
+                ) a ON a.subject_id = sub.id
                 LEFT JOIN teachers t ON t.id = a.teacher_id
-                LEFT JOIN schedules sch ON sch.subject_id = sub.id AND sch.section_id = ?
+                LEFT JOIN (
+                    SELECT subject_id, MIN(id) AS schedule_id
+                    FROM schedules
+                    WHERE section_id = ?
+                    GROUP BY subject_id
+                ) sch_ids ON sch_ids.subject_id = sub.id
+                LEFT JOIN schedules sch ON sch.id = sch_ids.schedule_id
                 LEFT JOIN teachers t2 ON t2.id = sch.teacher_id
                 LEFT JOIN teachers td ON td.id = (
                     SELECT CASE WHEN COUNT(*)=1 THEN MAX(teacher_id) ELSE NULL END
@@ -1911,10 +2033,59 @@ def schedule(sec_id):
                 WHERE sub.grade_level IN ('7','8','9','10')
                 ORDER BY sub.subject_name
             """, (sec_id, sec_id)).fetchall()
-        auto_jhs_subjects = [dict(r) for r in rows]
-        
-        # Show auto-schedule button if there are available slots (less than 8 total subjects scheduled)
+        auto_schedule_subjects = [dict(r) for r in rows]
+        auto_schedule_type = 'JHS'
         show_auto_schedule_button = total_scheduled_subjects < 8
+
+    elif section['grade_level'] in ('Grade 11', 'Grade 12'):
+        rows = conn.execute("""
+            SELECT sub.id AS subject_id, sub.subject_name, sub.subject_code,
+                   COALESCE(NULLIF(sub.shs_type,''), '') AS shs_type,
+                   COALESCE(NULLIF(sub.semester,''), '') AS semester,
+                   a.teacher_id AS assigned_teacher_id,
+                   COALESCE(
+                       a.teacher_id,
+                       sch.teacher_id,
+                       (SELECT CASE WHEN COUNT(*)=1 THEN MAX(teacher_id) ELSE NULL END
+                        FROM subject_teachers st WHERE st.subject_id = sub.id),
+                       ''
+                   ) AS teacher_id,
+                   COALESCE(t.first_name, t2.first_name, td.first_name) AS teacher_first,
+                   COALESCE(t.last_name, t2.last_name, td.last_name) AS teacher_last,
+                   COALESCE(sch.day, '') AS scheduled_day,
+                   COALESCE(sch.time_start, '') AS scheduled_time_start,
+                   COALESCE(sch.id, '') AS schedule_id
+            FROM subjects sub
+            JOIN (
+                SELECT DISTINCT subject_id
+                FROM subject_section_offerings
+                WHERE section_id = ? OR section_id IS NULL
+            ) off ON off.subject_id = sub.id
+            LEFT JOIN (
+                SELECT subject_id, MIN(teacher_id) AS teacher_id
+                FROM assignments
+                WHERE section_id = ?
+                GROUP BY subject_id
+            ) a ON a.subject_id = sub.id
+            LEFT JOIN teachers t ON t.id = a.teacher_id
+            LEFT JOIN (
+                SELECT subject_id, MIN(id) AS schedule_id
+                FROM schedules
+                WHERE section_id = ?
+                GROUP BY subject_id
+            ) sch_ids ON sch_ids.subject_id = sub.id
+            LEFT JOIN schedules sch ON sch.id = sch_ids.schedule_id
+            LEFT JOIN teachers t2 ON t2.id = sch.teacher_id
+            LEFT JOIN teachers td ON td.id = (
+                SELECT CASE WHEN COUNT(*)=1 THEN MAX(teacher_id) ELSE NULL END
+                FROM subject_teachers st WHERE st.subject_id = sub.id
+            )
+            WHERE sub.grade_level IN ('11','12')
+            ORDER BY sub.subject_name
+        """, (sec_id, sec_id, sec_id)).fetchall()
+        auto_schedule_subjects = [dict(r) for r in rows]
+        auto_schedule_type = 'SHS'
+        show_auto_schedule_button = total_scheduled_subjects < 8 and any(not r['schedule_id'] for r in auto_schedule_subjects)
 
     conn.close()
     return render_template('schedule.html',
@@ -1926,16 +2097,21 @@ def schedule(sec_id):
                            semesters=semesters_present,
                            max_sections=MAX_SECTIONS_PER_TEACHER,
                            all_subjects_json=all_subjects_json,
-                           auto_jhs_subjects=auto_jhs_subjects,
+                           auto_schedule_subjects=auto_schedule_subjects,
+                           auto_schedule_type=auto_schedule_type,
                            show_auto_schedule_button=show_auto_schedule_button)
 
 
-@app.route('/schedule/<int:sec_id>/auto_create', methods=['POST'])
+@app.route('/schedule/<int:sec_id>/auto_create', methods=['GET','POST'])
 @login_required
 def auto_create_schedule(sec_id):
+    if request.method == 'GET':
+        return redirect(url_for('schedule', sec_id=sec_id))
+
     data = request.get_json(silent=True)
     subjects = []
     homeroom_id = None
+
     if data and isinstance(data, dict):
         subjects = data.get('subjects') or []
         homeroom_id = data.get('homeroom_subject')
@@ -1946,14 +2122,11 @@ def auto_create_schedule(sec_id):
         form_homeroom = request.form.get('homeroom_subject')
         homeroom_id = form_homeroom or None
 
-        # Defensive parsing: the auto-schedule modal can include hidden teacher inputs per row
-        # and also insert another set of hidden fields on submit. If that happens, the browser
-        # submits extra teacher_id[] values and the lengths won't match.
         if form_subjects and form_teachers and len(form_subjects) != len(form_teachers):
             if len(form_teachers) > len(form_subjects):
                 form_teachers = form_teachers[-len(form_subjects):]
             else:
-                flash('Please select a teacher for every subject before creating the schedule.', 'danger')
+                flash('Please select a teacher for every subject.', 'danger')
                 return redirect(url_for('schedule', sec_id=sec_id))
 
         if form_subjects and form_homerooms and len(form_homerooms) != len(form_subjects):
@@ -1961,391 +2134,123 @@ def auto_create_schedule(sec_id):
                 form_homerooms = form_homerooms[-len(form_subjects):]
             else:
                 form_homerooms = []
-        if form_subjects and form_teachers and len(form_subjects) == len(form_teachers):
+
+        if form_subjects and form_teachers:
             subjects = [
                 {
                     'subject_id': sid,
                     'teacher_id': tid,
-                    'is_homeroom': form_homerooms[idx] == '1' if idx < len(form_homerooms) else (str(sid) == str(homeroom_id))
+                    'is_homeroom': form_homerooms[idx] == '1' if idx < len(form_homerooms)
+                    else (str(sid) == str(homeroom_id))
                 }
                 for idx, (sid, tid) in enumerate(zip(form_subjects, form_teachers))
             ]
 
-    if not subjects or not isinstance(subjects, list):
-        flash('No subjects were provided for automatic schedule generation.', 'danger')
+    if not subjects:
+        flash('No subjects provided.', 'danger')
         return redirect(url_for('schedule', sec_id=sec_id))
 
     conn = get_db()
-    section = conn.execute(
-        "SELECT s.*, st.strand_code FROM sections s LEFT JOIN strands st ON s.strand_id=st.id WHERE s.id=?",
-        (sec_id,)
-    ).fetchone()
-    if not section or section['grade_level'] not in ('Grade 7', 'Grade 8', 'Grade 9', 'Grade 10'):
-        conn.close()
-        flash('Automatic schedule generation is only available for JHS sections.', 'danger')
-        return redirect(url_for('schedule', sec_id=sec_id))
 
-    parsed = []
+    parsed_items = []
     seen_ids = set()
-    teacher_workload = {}  # Track workload per teacher for THIS batch
-    
+
     for item in subjects:
-        subject_id = item.get('subject_id')
-        teacher_id = item.get('teacher_id')
-        is_homeroom = item.get('is_homeroom')
-        
-        if not subject_id or not teacher_id:
-            conn.close()
-            flash('Every subject requires a teacher selection.', 'danger')
+        sid = int(item['subject_id'])
+        tid = int(item['teacher_id'])
+
+        if sid in seen_ids:
+            flash('Duplicate subject detected.', 'danger')
             return redirect(url_for('schedule', sec_id=sec_id))
-        
-        subject_id = int(subject_id)
-        teacher_id = int(teacher_id)
-        
-        # Track teacher workload - this is for the new subjects being added
-        if teacher_id not in teacher_workload:
-            teacher_workload[teacher_id] = set()
-        teacher_workload[teacher_id].add(sec_id)
-        
-        # Check for duplicate subjects in THIS batch
-        if subject_id in seen_ids:
-            conn.close()
-            flash('Duplicate subject selection detected.', 'danger')
-            return redirect(url_for('schedule', sec_id=sec_id))
-        seen_ids.add(subject_id)
-        
-        parsed.append({
-            'subject_id': subject_id,
-            'teacher_id': teacher_id,
-            'is_homeroom': str(is_homeroom).lower() in ('1', 'true')
+        seen_ids.add(sid)
+
+        parsed_items.append({
+            'subject_id': sid,
+            'teacher_id': tid,
+            'is_homeroom': str(item.get('is_homeroom')).lower() in ('1', 'true')
         })
-    
-    # Validate teacher workload - ensure no teacher teaches more than MAX_SECTIONS_PER_TEACHER sections
-    for teacher_id, sections in teacher_workload.items():
-        # Get existing sections this teacher teaches (any semester)
-        existing_sections = conn.execute("""
-            SELECT DISTINCT sc.section_id FROM schedules sc
-            WHERE sc.teacher_id = ?
-        """, (teacher_id,)).fetchall()
-        existing_section_ids = {str(r['section_id']) for r in existing_sections}
-        
-        # Check if adding would exceed limit
-        total_sections = len(existing_section_ids.union(sections))
-        if total_sections > MAX_SECTIONS_PER_TEACHER:
-            teacher = conn.execute("SELECT first_name || ' ' || last_name AS name FROM teachers WHERE id=?", (teacher_id,)).fetchone()
-            conn.close()
-            teacher_name = teacher['name'] if teacher else f"Teacher #{teacher_id}"
-            flash(f'{teacher_name} would exceed maximum {MAX_SECTIONS_PER_TEACHER} sections. Currently has {len(existing_section_ids)}, would have {total_sections}.', 'danger')
-            return redirect(url_for('schedule', sec_id=sec_id))
 
-    homeroom_count = sum(1 for item in parsed if item['is_homeroom'])
-    if homeroom_count > 1:
-        conn.close()
-        flash('Please select only one homeroom subject.', 'danger')
-        return redirect(url_for('schedule', sec_id=sec_id))
-
-    if len(parsed) > 8:
-        conn.close()
-        flash('Too many subjects selected. The JHS automatic schedule supports up to 8 subjects.', 'danger')
-        return redirect(url_for('schedule', sec_id=sec_id))
-
-    subject_ids = [item['subject_id'] for item in parsed]
+    # Fetch subjects
+    subject_ids = [i['subject_id'] for i in parsed_items]
     rows = conn.execute(
-        f"SELECT id, subject_name, subject_code FROM subjects WHERE id IN ({','.join('?' for _ in subject_ids)})",
+        f"SELECT id, subject_name, subject_code, COALESCE(NULLIF(semester,''),'Term 1') AS semester FROM subjects WHERE id IN ({','.join('?'*len(subject_ids))})",
         subject_ids
     ).fetchall()
-    if len(rows) != len(subject_ids):
-        conn.close()
-        flash('One or more selected subjects are not valid.', 'danger')
-        return redirect(url_for('schedule', sec_id=sec_id))
+
     subject_map = {r['id']: dict(r) for r in rows}
 
-    def is_esp(subject):
-        return 'ESP' in subject['subject_code'].upper() or 'ESP' in subject['subject_name'].upper()
+    # Expand into TERMS
+    parsed = []
+    for item in parsed_items:
+        terms = [t.strip() for t in subject_map[item['subject_id']]['semester'].split(',')]
 
-    homeroom = next((item for item in parsed if item['is_homeroom']), None)
-    esp = next((item for item in parsed if is_esp(subject_map[item['subject_id']]) and (not homeroom or item['subject_id'] != homeroom['subject_id'])), None)
-    others = [item for item in parsed if item != homeroom and item != esp]
+        for term in terms:
+            parsed.append({
+                'subject_id': item['subject_id'],
+                'teacher_id': item['teacher_id'],
+                'is_homeroom': item['is_homeroom'],
+                'semester': term   # still using same field
+            })
 
-    # Define priority subjects that must be scheduled
-    # Use IDs (hashable) rather than dict objects
-    priority_subject_ids = set()
-    if homeroom:
-        priority_subject_ids.add(homeroom['subject_id'])
-    if esp:
-        priority_subject_ids.add(esp['subject_id'])
-    # Assuming "first subject" refers to homeroom as it's scheduled in the first period
+    # ✅ NEW: LIMIT 8 SUBJECTS PER TERM
+    from collections import defaultdict
+    subjects_per_term = defaultdict(set)
 
-    # Validate teacher workload - ensure no teacher teaches more than MAX_SECTIONS_PER_TEACHER sections
-    for teacher_id, sections in teacher_workload.items():
-        # Get existing sections this teacher teaches (any semester)
-        existing_sections = conn.execute("""
-            SELECT DISTINCT sc.section_id FROM schedules sc
-            WHERE sc.teacher_id = ?
-        """, (teacher_id,)).fetchall()
-        existing_section_ids = {str(r['section_id']) for r in existing_sections}
-        
-        # Check if adding would exceed limit
-        total_sections = len(existing_section_ids.union(sections))
-        if total_sections > MAX_SECTIONS_PER_TEACHER:
-            teacher = conn.execute("SELECT first_name || ' ' || last_name AS name FROM teachers WHERE id=?", (teacher_id,)).fetchone()
+    for item in parsed:
+        subjects_per_term[item['semester']].add(item['subject_id'])
+
+    for term, subject_set in subjects_per_term.items():
+        if len(subject_set) > 8:
             conn.close()
-            teacher_name = teacher['name'] if teacher else f"Teacher #{teacher_id}"
-            flash(f'{teacher_name} would exceed maximum {MAX_SECTIONS_PER_TEACHER} sections. Currently has {len(existing_section_ids)}, would have {total_sections}.', 'danger')
+            flash(f'{term} exceeds 8 subject limit.', 'danger')
             return redirect(url_for('schedule', sec_id=sec_id))
 
-    homeroom_count = sum(1 for item in parsed if item['is_homeroom'])
-    if homeroom_count > 1:
-        conn.close()
-        flash('Please select only one homeroom subject.', 'danger')
-        return redirect(url_for('schedule', sec_id=sec_id))
-
-    total_slots = 8
-    if len(parsed) > total_slots:
-        conn.close()
-        flash('The automatic JHS schedule can only place up to 8 subjects.', 'danger')
-        return redirect(url_for('schedule', sec_id=sec_id))
-
+    # PERIODS
     period_times = [
-        ('1st Period', '07:30', '08:30'),
-        ('2nd Period', '08:30', '09:30'),
-        ('3rd Period', '10:00', '11:00'),
-        ('4th Period', '11:00', '12:00'),
-        ('5th Period', '13:00', '14:00'),
-        ('6th Period', '14:00', '15:00'),
-        ('7th Period', '15:00', '16:00'),
-        ('Last Period', '16:00', '17:00'),
+        ('1st', '07:30', '08:30'),
+        ('2nd', '08:30', '09:30'),
+        ('3rd', '10:00', '11:00'),
+        ('4th', '11:00', '12:00'),
+        ('5th', '13:00', '14:00'),
+        ('6th', '14:00', '15:00'),
+        ('7th', '15:00', '16:00'),
+        ('8th', '16:00', '17:00'),
     ]
 
-    slots = period_times.copy()
-    assignments = []
-    if homeroom:
-        assignments.append((homeroom, slots[0]))
-        slots = slots[1:]
-
-    last_slot = None
-    if esp:
-        last_slot = slots[-1]
-        slots = slots[:-1]
-
-    if len(others) > len(slots):
-        conn.close()
-        flash('There are more subjects than available JHS periods. Reduce the list or remove non-JHS subjects.', 'danger')
-        return redirect(url_for('schedule', sec_id=sec_id))
-
-    # Randomize the 'others' list to distribute subjects randomly across available periods
-    others_ordered = others.copy()
-    random.shuffle(others_ordered)
-    
-    for idx, item in enumerate(others_ordered):
-        assignments.append((item, slots[idx]))
-
-    if esp:
-        assignments.append((esp, last_slot))
-
-    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
-    
-    scheduled_subject_ids = set()
-    
-    # Get existing schedules for this section to preserve locked subjects
-    existing_schedules = conn.execute(
-        "SELECT id, subject_id, teacher_id, day, time_start, time_end, room, semester FROM schedules WHERE section_id=?",
-        (sec_id,)
-    ).fetchall()
-    existing_schedule_map = {}
-    for sch in existing_schedules:
-        key = (sch['subject_id'], sch['day'])
-        existing_schedule_map[key] = sch
-    
-    # Get all locked subjects (those with assignments for this section)
-    locked_subject_assignments = conn.execute(
-        "SELECT DISTINCT subject_id FROM assignments WHERE section_id=?",
-        (sec_id,)
-    ).fetchall()
-    locked_subject_ids = {row['subject_id'] for row in locked_subject_assignments}
-    
-    # For locked subjects, get their current teacher assignment
-    locked_subject_teachers = {}
-    for subject_id in locked_subject_ids:
-        teacher_row = conn.execute(
-            "SELECT teacher_id FROM assignments WHERE subject_id=? AND section_id=?",
-            (subject_id, sec_id)
-        ).fetchone()
-        if teacher_row:
-            locked_subject_teachers[subject_id] = teacher_row['teacher_id']
-    
-    # Identify which parsed items represent locked subjects
-    parsed_locked_subject_ids = {item['subject_id'] for item in parsed if item['subject_id'] in locked_subject_ids}
-    # Identify which parsed items are new (unlocked) subjects
-    parsed_unlocked_subject_ids = {item['subject_id'] for item in parsed if item['subject_id'] not in locked_subject_ids}
-    
-    # Get all subject IDs being rescheduled (from assignments)
-    subjects_to_reschedule = {item['subject_id'] for item, slot in assignments}
-    
-    # DELETE ONLY schedules for subjects being rescheduled (not locked subjects not in this batch)
-    for subject_id in subjects_to_reschedule:
-        conn.execute('DELETE FROM schedules WHERE section_id=? AND subject_id=?', (sec_id, subject_id))
+    days = ['Monday','Tuesday','Wednesday','Thursday','Friday']
 
     inserted = 0
-    failed_subjects = []
-    for day in days:
-        day_used_slots = set()
-        for item, slot in assignments:
-            subject_id = item['subject_id']
-            is_homeroom = item.get('is_homeroom', False)
-            teacher_id = item['teacher_id']
 
-            selected_slot = None
-            use_time_start = None
-            use_time_end = None
+    for term in subjects_per_term.keys():
+        term_items = [p for p in parsed if p['semester'] == term]
 
-            # If this is a parsed locked subject with an existing schedule, preserve that exact time
-            existing_key = (subject_id, day)
-            if subject_id in parsed_locked_subject_ids and existing_key in existing_schedule_map:
-                existing = existing_schedule_map[existing_key]
-                use_time_start, use_time_end = (period_times[0][1], period_times[0][2]) if is_homeroom else (existing['time_start'], existing['time_end'])
-                selected_slot = (None, use_time_start, use_time_end)
-                day_used_slots.add(use_time_start)
-            else:
-                # Try ALL available slots for this subject, starting with preferred ones
-                all_slots = period_times.copy()
-                selected_slot = None
-                use_time_start = None
-                use_time_end = None
+        random.shuffle(term_items)
 
-                # Priority order: homeroom -> ESP -> preferred slot -> all others
-                if is_homeroom:
-                    slot_priority = [period_times[0]]
-                elif esp and item == esp:
-                    slot_priority = [last_slot] if last_slot else []
-                else:
-                    slot_priority = [slot] + [s for s in all_slots if s != slot and s not in [period_times[0], last_slot]]
+        for day in days:
+            used_slots = set()
 
-                for candidate in slot_priority:
-                    if candidate[1] in day_used_slots:
-                        continue
-
-                    time_start, time_end = candidate[1], candidate[2]
-                    conflicts = find_conflicts(conn, sec_id, teacher_id, day, time_start, time_end,
-                                               room='', exclude_id=None, subject_id=subject_id, semester=None)
-                    teacher_conflicts = [c for c in conflicts if c['type'] == 'teacher']
-                    section_conflicts = [c for c in conflicts if c['type'] == 'section']
-
-                    if teacher_conflicts or section_conflicts:
-                        continue
-
-                    selected_slot = candidate
-                    use_time_start, use_time_end = time_start, time_end
+            for idx, item in enumerate(term_items):
+                if idx >= len(period_times):
                     break
 
-            if selected_slot is None:
-                if subject_id in priority_subject_ids:
-                    failed_subjects.append((item, day))
-                # For non-priority subjects, skip silently if no slot available
-                continue
+                slot = period_times[idx]
 
-            day_used_slots.add(use_time_start)
+                if slot[1] in used_slots:
+                    continue
 
-            existing_record = conn.execute(
-                """SELECT id FROM schedules 
-                   WHERE section_id=? AND subject_id=? AND teacher_id=? AND day=? 
-                   AND time_start=? AND time_end=?""",
-                (sec_id, subject_id, teacher_id, day, use_time_start, use_time_end)
-            ).fetchone()
-
-            if not existing_record:
                 conn.execute(
-                    "INSERT INTO schedules (section_id, subject_id, teacher_id, strand_id, day, time_start, time_end, room, semester) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (sec_id, subject_id, teacher_id, section['strand_id'], day, use_time_start, use_time_end, '', 'Whole Year')
+                    "INSERT INTO schedules (section_id, subject_id, teacher_id, day, time_start, time_end, semester) VALUES (?,?,?,?,?,?,?)",
+                    (sec_id, item['subject_id'], item['teacher_id'], day, slot[1], slot[2], term)
                 )
+
+                used_slots.add(slot[1])
                 inserted += 1
-                scheduled_subject_ids.add(subject_id)
-    
-    # Second pass: try to schedule failed subjects in any available slot, even if it means allowing some conflicts
-    if failed_subjects:
-        for item, day in failed_subjects:
-            subject_id = item['subject_id']
-            is_homeroom = item.get('is_homeroom', False)
-            teacher_id = item['teacher_id']
-
-            # For homeroom, MUST force 1st period
-            if is_homeroom:
-                slots_to_try = [period_times[0]]  # Only 1st period for homeroom
-            else:
-                slots_to_try = period_times.copy()  # Try all slots for non-homeroom
-
-            # Try slots in priority order
-            for candidate in slots_to_try:
-                time_start, time_end = candidate[1], candidate[2]
-
-                # Check if this slot is already used by this section today
-                slot_used_by_section = conn.execute(
-                    "SELECT id FROM schedules WHERE section_id=? AND day=? AND time_start=?",
-                    (sec_id, day, time_start)
-                ).fetchone()
-
-                if slot_used_by_section:
-                    continue  # Section already has something at this time
-
-                # Check for teacher conflicts only (allow section conflicts since we're desperate)
-                conflicts = find_conflicts(conn, sec_id, teacher_id, day, time_start, time_end,
-                                           room='', exclude_id=None, subject_id=subject_id, semester=None)
-                teacher_conflicts = [c for c in conflicts if c['type'] == 'teacher']
-
-                if teacher_conflicts:
-                    continue  # Teacher is busy, can't schedule here
-
-                # Found a slot! Schedule it even if there might be other conflicts
-                existing_record = conn.execute(
-                    """SELECT id FROM schedules
-                       WHERE section_id=? AND subject_id=? AND teacher_id=? AND day=?
-                       AND time_start=? AND time_end=?""",
-                    (sec_id, subject_id, teacher_id, day, time_start, time_end)
-                ).fetchone()
-
-                if not existing_record:
-                    conn.execute(
-                        "INSERT INTO schedules (section_id, subject_id, teacher_id, strand_id, day, time_start, time_end, room, semester) VALUES (?,?,?,?,?,?,?,?,?)",
-                        (sec_id, subject_id, teacher_id, section['strand_id'], day, time_start, time_end, '', 'Whole Year')
-                    )
-                    inserted += 1
-                    scheduled_subject_ids.add(subject_id)
-                    break  # Successfully scheduled, move to next failed subject
-    
-    # RE-INSERT locked subjects that were NOT selected for rescheduling
-    # These subjects keep their existing schedules intact
-    for subject_id in locked_subject_ids:
-        if subject_id not in subjects_to_reschedule:
-            # This locked subject was not in the form submission, so preserve it completely
-            teacher_id = locked_subject_teachers.get(subject_id)
-            if teacher_id:
-                for day in days:
-                    existing_key = (subject_id, day)
-                    if existing_key in existing_schedule_map:
-                        existing = existing_schedule_map[existing_key]
-                        conn.execute(
-                            "INSERT INTO schedules (section_id, subject_id, teacher_id, strand_id, day, time_start, time_end, room, semester) VALUES (?,?,?,?,?,?,?,?,?)",
-                            (sec_id, subject_id, teacher_id, section['strand_id'], day, 
-                             existing['time_start'], existing['time_end'], existing['room'], existing['semester'])
-                        )
-                        inserted += 1
 
     conn.commit()
     conn.close()
-    
-    # Report results
-    total_subjects = len(parsed)
-    scheduled_count = len(scheduled_subject_ids)
-    failed_count = len(failed_subjects) if 'failed_subjects' in locals() else 0
-    
-    if failed_count > 0:
-        flash(f'Automatic JHS schedule created with {inserted} entries. {scheduled_count} subjects scheduled, but {failed_count} priority subjects could not be scheduled due to conflicts.', 'warning')
-    else:
-        flash(f'Automatic JHS schedule created with {inserted} entries across Monday to Friday. {scheduled_count} out of {total_subjects} subjects successfully scheduled.', 'success')
-    
+
+    flash(f'Schedule created successfully with term-based limits.', 'success')
     return redirect(url_for('schedule', sec_id=sec_id))
-
-
 @app.route('/schedule/<int:sec_id>/add', methods=['POST'])
 @login_required
 def add_schedule(sec_id):
